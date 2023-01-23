@@ -5,15 +5,17 @@
 #ifndef __KERNEL_ASAN_H
 #define __KERNEL_ASAN_H
 
+#include <stdint.h>
 
 #define ASAN_DATA_RED_ZONE	-1
 #define ASAN_HEAP_RED_ZONE	-2
 
-#define ASAN_BLOCK_SIZE		8
-#define ASAN_BLOCK_SHIFT	3
+#define ASAN_BLOCK_SIZE		U(8)
+#define ASAN_BLOCK_SHIFT	U(3)
 #define ASAN_BLOCK_MASK		(ASAN_BLOCK_SIZE - 1)
 
-#ifndef ASM
+#ifndef __ASSEMBLER__
+#include <compiler.h>
 #include <string.h>
 #include <types_ext.h>
 
@@ -54,5 +56,5 @@ static inline void *asan_memcpy_unchecked(void *__restrict s1,
 
 #endif
 
-#endif /*ASM*/
+#endif /*__ASSEMBLER__*/
 #endif /*__KERNEL_ASAN_H*/

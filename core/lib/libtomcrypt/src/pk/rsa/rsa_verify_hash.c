@@ -1,42 +1,7 @@
-// SPDX-License-Identifier: BSD-2-Clause
-/*
- * Copyright (c) 2001-2007, Tom St Denis
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- * this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- * this list of conditions and the following disclaimer in the documentation
- * and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- */
-
-/* LibTomCrypt, modular cryptographic library -- Tom St Denis
- *
- * LibTomCrypt is a library that provides various cryptographic
- * algorithms in a highly modular and flexible manner.
- *
- * The library is free for all purposes without any express
- * guarantee it works.
- *
- * Tom St Denis, tomstdenis@gmail.com, http://libtom.org
- */
-#include "tomcrypt.h"
+/* LibTomCrypt, modular cryptographic library -- Tom St Denis */
+/* SPDX-License-Identifier: Unlicense */
+#include <fault_mitigation.h>
+#include "tomcrypt_private.h"
 
 /**
   @file rsa_verify_hash.c
@@ -58,15 +23,17 @@
   @param key              The public RSA key corresponding to the key that performed the signature
   @return CRYPT_OK on success (even if the signature is invalid)
 */
-int rsa_verify_hash_ex(const unsigned char *sig,      unsigned long siglen,
-                       const unsigned char *hash,     unsigned long hashlen,
+int rsa_verify_hash_ex(const unsigned char *sig,            unsigned long  siglen,
+                       const unsigned char *hash,           unsigned long  hashlen,
                              int            padding,
-                             int            hash_idx, unsigned long saltlen,
-                             int           *stat,     rsa_key      *key)
+                             int            hash_idx,       unsigned long  saltlen,
+                             int           *stat,     const rsa_key       *key)
 {
   unsigned long modulus_bitlen, modulus_bytelen, x;
   int           err;
+  unsigned int  inc1 = 0;
   unsigned char *tmpbuf;
+  struct ftmn   ftmn = { };
 
   LTC_ARGCHK(hash  != NULL);
   LTC_ARGCHK(sig   != NULL);
@@ -75,6 +42,7 @@ int rsa_verify_hash_ex(const unsigned char *sig,      unsigned long siglen,
 
   /* default to invalid */
   *stat = 0;
+  FTMN_SET_CHECK_RES(&ftmn, FTMN_INCR0, 1);
 
   /* valid padding? */
 
@@ -122,12 +90,18 @@ int rsa_verify_hash_ex(const unsigned char *sig,      unsigned long siglen,
   if (padding == LTC_PKCS_1_PSS) {
     /* PSS decode and verify it */
 
+    FTMN_PUSH_LINKED_CALL(&ftmn, FTMN_FUNC_HASH("pkcs_1_pss_decode"));
     if(modulus_bitlen%8 == 1){
       err = pkcs_1_pss_decode(hash, hashlen, tmpbuf+1, x-1, saltlen, hash_idx, modulus_bitlen, stat);
     }
     else{
       err = pkcs_1_pss_decode(hash, hashlen, tmpbuf, x, saltlen, hash_idx, modulus_bitlen, stat);
     }
+    if (*stat) {
+      FTMN_SET_CHECK_RES_FROM_CALL(&ftmn, FTMN_INCR1, 0);
+      inc1 = 1;
+    }
+    FTMN_POP_LINKED_CALL(&ftmn);
 
   } else {
     /* PKCS #1 v1.5 decode it */
@@ -172,10 +146,10 @@ int rsa_verify_hash_ex(const unsigned char *sig,      unsigned long siglen,
       LTC_SET_ASN1(siginfo,    0, LTC_ASN1_SEQUENCE,          digestinfo,                    2);
       LTC_SET_ASN1(siginfo,    1, LTC_ASN1_OCTET_STRING,      tmpbuf,                        siglen);
 
-      if ((err = der_decode_sequence(out, outlen, siginfo, 2)) != CRYPT_OK) {
+      if ((err = der_decode_sequence_strict(out, outlen, siginfo, 2)) != CRYPT_OK) {
          /* fallback to Legacy:missing NULL */
          LTC_SET_ASN1(siginfo, 0, LTC_ASN1_SEQUENCE,          digestinfo,                    1);
-         if ((err = der_decode_sequence(out, outlen, siginfo, 2)) != CRYPT_OK) {
+         if ((err = der_decode_sequence_strict(out, outlen, siginfo, 2)) != CRYPT_OK) {
            XFREE(out);
            goto bail_2;
          }
@@ -191,15 +165,19 @@ int rsa_verify_hash_ex(const unsigned char *sig,      unsigned long siglen,
           (digestinfo[0].size == hash_descriptor[hash_idx]->OIDlen) &&
         (XMEMCMP(digestinfo[0].data, hash_descriptor[hash_idx]->OID, sizeof(unsigned long) * hash_descriptor[hash_idx]->OIDlen) == 0) &&
           (siginfo[1].size == hashlen) &&
-        (XMEMCMP(siginfo[1].data, hash, hashlen) == 0)) {
+        (ftmn_set_check_res_memcmp(&ftmn, FTMN_INCR1, XMEMCMP,
+				   siginfo[1].data, hash, hashlen) == 0)) {
          *stat = 1;
       }
+      inc1 = 1;
     } else {
       /* only check if the hash is equal */
       if ((hashlen == outlen) &&
-          (XMEMCMP(out, hash, hashlen) == 0)) {
+          (ftmn_set_check_res_memcmp(&ftmn, FTMN_INCR1, XMEMCMP,
+				     out, hash, hashlen) == 0)) {
         *stat = 1;
       }
+      inc1 = 1;
     }
 
 #ifdef LTC_CLEAN_STACK
@@ -213,11 +191,8 @@ bail_2:
   zeromem(tmpbuf, siglen);
 #endif
   XFREE(tmpbuf);
+  FTMN_CALLEE_DONE_CHECK(&ftmn, FTMN_INCR0, FTMN_STEP_COUNT(1, inc1), !*stat);
   return err;
 }
 
 #endif /* LTC_MRSA */
-
-/* $Source: /cvs/libtom/libtomcrypt/src/pk/rsa/rsa_verify_hash.c,v $ */
-/* $Revision: 1.13 $ */
-/* $Date: 2007/05/12 14:32:35 $ */

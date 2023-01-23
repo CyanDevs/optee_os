@@ -15,7 +15,7 @@
 #include <imx_pm.h>
 #include <kernel/panic.h>
 #include <kernel/cache_helpers.h>
-#include <kernel/generic_boot.h>
+#include <kernel/boot.h>
 #include <kernel/misc.h>
 #include <mm/core_mmu.h>
 #include <mm/core_memprot.h>
@@ -48,7 +48,13 @@ static int imx7_cpu_suspend_to_ocram(uint32_t power_state __unused,
 		uintptr_t entry, uint32_t context_id __unused,
 		struct sm_nsec_ctx *nsec)
 {
-	struct imx7_pm_info *p = pm_info;
+	uint32_t suspend_ocram_base = core_mmu_get_va(TRUSTZONE_OCRAM_START +
+						      SUSPEND_OCRAM_OFFSET,
+						      MEM_AREA_TEE_COHERENT,
+						      sizeof(struct
+						      imx7_pm_info));
+
+	struct imx7_pm_info *p = (struct imx7_pm_info *)suspend_ocram_base;
 	int ret;
 
 	if (!suspended_init) {
@@ -69,7 +75,8 @@ static int imx7_cpu_suspend_to_ocram(uint32_t power_state __unused,
 		return 0;
 	}
 
-	plat_cpu_reset_late();
+	if (!get_core_pos())
+		plat_primary_init_early();
 
 	sm_restore_unbanked_regs(&nsec->ub_regs);
 

@@ -8,8 +8,9 @@
 #include <crypto/crypto_impl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string_ext.h>
 #include <tee_api_types.h>
-#include <tomcrypt.h>
+#include <tomcrypt_private.h>
 #include <utee_defines.h>
 #include <util.h>
 

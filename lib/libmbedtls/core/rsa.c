@@ -6,6 +6,7 @@
 
 #include <assert.h>
 #include <crypto/crypto.h>
+#include <crypto/crypto_impl.h>
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/pk.h>
@@ -14,14 +15,17 @@
 #include <string.h>
 #include <tee/tee_cryp_utl.h>
 #include <utee_defines.h>
+#include <fault_mitigation.h>
 
-#include "mbd_rand.h"
+#include "mbed_helpers.h"
 
 static TEE_Result get_tee_result(int lmd_res)
 {
 	switch (lmd_res) {
 	case 0:
 		return TEE_SUCCESS;
+	case MBEDTLS_ERR_RSA_PRIVATE_FAILED +
+		MBEDTLS_ERR_MPI_BAD_INPUT_DATA:
 	case MBEDTLS_ERR_RSA_BAD_INPUT_DATA:
 	case MBEDTLS_ERR_RSA_INVALID_PADDING:
 	case MBEDTLS_ERR_PK_TYPE_MISMATCH:
@@ -126,6 +130,10 @@ static void mbd_rsa_free(mbedtls_rsa_context *rsa)
 
 TEE_Result crypto_acipher_alloc_rsa_keypair(struct rsa_keypair *s,
 					    size_t key_size_bits)
+__weak __alias("sw_crypto_acipher_alloc_rsa_keypair");
+
+TEE_Result sw_crypto_acipher_alloc_rsa_keypair(struct rsa_keypair *s,
+					       size_t key_size_bits)
 {
 	memset(s, 0, sizeof(*s));
 	s->e = crypto_bignum_allocate(key_size_bits);
@@ -155,19 +163,16 @@ TEE_Result crypto_acipher_alloc_rsa_keypair(struct rsa_keypair *s,
 
 	return TEE_SUCCESS;
 err:
-	crypto_bignum_free(s->e);
-	crypto_bignum_free(s->d);
-	crypto_bignum_free(s->n);
-	crypto_bignum_free(s->p);
-	crypto_bignum_free(s->q);
-	crypto_bignum_free(s->qp);
-	crypto_bignum_free(s->dp);
-
+	crypto_acipher_free_rsa_keypair(s);
 	return TEE_ERROR_OUT_OF_MEMORY;
 }
 
 TEE_Result crypto_acipher_alloc_rsa_public_key(struct rsa_public_key *s,
 					       size_t key_size_bits)
+__weak __alias("sw_crypto_acipher_alloc_rsa_public_key");
+
+TEE_Result sw_crypto_acipher_alloc_rsa_public_key(struct rsa_public_key *s,
+						  size_t key_size_bits)
 {
 	memset(s, 0, sizeof(*s));
 	s->e = crypto_bignum_allocate(key_size_bits);
@@ -183,6 +188,9 @@ err:
 }
 
 void crypto_acipher_free_rsa_public_key(struct rsa_public_key *s)
+__weak __alias("sw_crypto_acipher_free_rsa_public_key");
+
+void sw_crypto_acipher_free_rsa_public_key(struct rsa_public_key *s)
 {
 	if (!s)
 		return;
@@ -190,12 +198,39 @@ void crypto_acipher_free_rsa_public_key(struct rsa_public_key *s)
 	crypto_bignum_free(s->e);
 }
 
-TEE_Result crypto_acipher_gen_rsa_key(struct rsa_keypair *key, size_t key_size)
+void crypto_acipher_free_rsa_keypair(struct rsa_keypair *s)
+__weak __alias("sw_crypto_acipher_free_rsa_keypair");
+
+void sw_crypto_acipher_free_rsa_keypair(struct rsa_keypair *s)
+{
+	if (!s)
+		return;
+	crypto_bignum_free(s->e);
+	crypto_bignum_free(s->d);
+	crypto_bignum_free(s->n);
+	crypto_bignum_free(s->p);
+	crypto_bignum_free(s->q);
+	crypto_bignum_free(s->qp);
+	crypto_bignum_free(s->dp);
+	crypto_bignum_free(s->dq);
+}
+
+TEE_Result crypto_acipher_gen_rsa_key(struct rsa_keypair *key,
+				      size_t key_size)
+__weak __alias("sw_crypto_acipher_gen_rsa_key");
+
+TEE_Result sw_crypto_acipher_gen_rsa_key(struct rsa_keypair *key,
+					 size_t key_size)
 {
 	TEE_Result res = TEE_SUCCESS;
 	mbedtls_rsa_context rsa;
+	mbedtls_ctr_drbg_context rngctx;
 	int lmd_res = 0;
 	uint32_t e = 0;
+
+	mbedtls_ctr_drbg_init(&rngctx);
+	if (mbedtls_ctr_drbg_seed(&rngctx, mbd_rand, NULL, NULL, 0))
+		return TEE_ERROR_BAD_STATE;
 
 	memset(&rsa, 0, sizeof(rsa));
 	mbedtls_rsa_init(&rsa, 0, 0);
@@ -205,7 +240,9 @@ TEE_Result crypto_acipher_gen_rsa_key(struct rsa_keypair *key, size_t key_size)
 				 (unsigned char *)&e, sizeof(uint32_t));
 
 	e = TEE_U32_FROM_BIG_ENDIAN(e);
-	lmd_res = mbedtls_rsa_gen_key(&rsa, mbd_rand, NULL, key_size, (int)e);
+	lmd_res = mbedtls_rsa_gen_key(&rsa, mbedtls_ctr_drbg_random, &rngctx,
+				      key_size, (int)e);
+	mbedtls_ctr_drbg_free(&rngctx);
 	if (lmd_res != 0) {
 		res = get_tee_result(lmd_res);
 	} else if ((size_t)mbedtls_mpi_bitlen(&rsa.N) != key_size) {
@@ -231,8 +268,15 @@ TEE_Result crypto_acipher_gen_rsa_key(struct rsa_keypair *key, size_t key_size)
 }
 
 TEE_Result crypto_acipher_rsanopad_encrypt(struct rsa_public_key *key,
-					   const uint8_t *src, size_t src_len,
-					   uint8_t *dst, size_t *dst_len)
+					   const uint8_t *src,
+					   size_t src_len, uint8_t *dst,
+					   size_t *dst_len)
+__weak __alias("sw_crypto_acipher_rsanopad_encrypt");
+
+TEE_Result sw_crypto_acipher_rsanopad_encrypt(struct rsa_public_key *key,
+					      const uint8_t *src,
+					      size_t src_len, uint8_t *dst,
+					      size_t *dst_len)
 {
 	TEE_Result res = TEE_SUCCESS;
 	mbedtls_rsa_context rsa;
@@ -289,8 +333,15 @@ out:
 }
 
 TEE_Result crypto_acipher_rsanopad_decrypt(struct rsa_keypair *key,
-					   const uint8_t *src, size_t src_len,
-					   uint8_t *dst, size_t *dst_len)
+					   const uint8_t *src,
+					   size_t src_len, uint8_t *dst,
+					   size_t *dst_len)
+__weak __alias("sw_crypto_acipher_rsanopad_decrypt");
+
+TEE_Result sw_crypto_acipher_rsanopad_decrypt(struct rsa_keypair *key,
+					      const uint8_t *src,
+					      size_t src_len, uint8_t *dst,
+					      size_t *dst_len)
 {
 	TEE_Result res = TEE_SUCCESS;
 	mbedtls_rsa_context rsa;
@@ -338,11 +389,20 @@ out:
 	return res;
 }
 
-TEE_Result crypto_acipher_rsaes_decrypt(uint32_t algo, struct rsa_keypair *key,
+TEE_Result crypto_acipher_rsaes_decrypt(uint32_t algo,
+					struct rsa_keypair *key,
 					const uint8_t *label __unused,
 					size_t label_len __unused,
 					const uint8_t *src, size_t src_len,
 					uint8_t *dst, size_t *dst_len)
+__weak __alias("sw_crypto_acipher_rsaes_decrypt");
+
+TEE_Result sw_crypto_acipher_rsaes_decrypt(uint32_t algo,
+					   struct rsa_keypair *key,
+					   const uint8_t *label __unused,
+					   size_t label_len __unused,
+					   const uint8_t *src, size_t src_len,
+					   uint8_t *dst, size_t *dst_len)
 {
 	TEE_Result res = TEE_SUCCESS;
 	int lmd_res = 0;
@@ -432,6 +492,14 @@ TEE_Result crypto_acipher_rsaes_encrypt(uint32_t algo,
 					size_t label_len __unused,
 					const uint8_t *src, size_t src_len,
 					uint8_t *dst, size_t *dst_len)
+__weak __alias("sw_crypto_acipher_rsaes_encrypt");
+
+TEE_Result sw_crypto_acipher_rsaes_encrypt(uint32_t algo,
+					   struct rsa_public_key *key,
+					   const uint8_t *label __unused,
+					   size_t label_len __unused,
+					   const uint8_t *src, size_t src_len,
+					   uint8_t *dst, size_t *dst_len)
 {
 	TEE_Result res = TEE_SUCCESS;
 	int lmd_res = 0;
@@ -498,9 +566,15 @@ out:
 }
 
 TEE_Result crypto_acipher_rsassa_sign(uint32_t algo, struct rsa_keypair *key,
-				      int salt_len __unused, const uint8_t *msg,
-				      size_t msg_len, uint8_t *sig,
-				      size_t *sig_len)
+				      int salt_len __unused,
+				      const uint8_t *msg, size_t msg_len,
+				      uint8_t *sig, size_t *sig_len)
+__weak __alias("sw_crypto_acipher_rsassa_sign");
+
+TEE_Result sw_crypto_acipher_rsassa_sign(uint32_t algo, struct rsa_keypair *key,
+					 int salt_len __unused,
+					 const uint8_t *msg, size_t msg_len,
+					 uint8_t *sig, size_t *sig_len)
 {
 	TEE_Result res = TEE_SUCCESS;
 	int lmd_res = 0;
@@ -535,8 +609,8 @@ TEE_Result crypto_acipher_rsassa_sign(uint32_t algo, struct rsa_keypair *key,
 		goto err;
 	}
 
-	res = tee_hash_get_digest_size(TEE_DIGEST_HASH_TO_ALGO(algo),
-				       &hash_size);
+	res = tee_alg_get_digest_size(TEE_DIGEST_HASH_TO_ALGO(algo),
+				      &hash_size);
 	if (res != TEE_SUCCESS)
 		goto err;
 
@@ -590,6 +664,14 @@ TEE_Result crypto_acipher_rsassa_verify(uint32_t algo,
 					const uint8_t *msg,
 					size_t msg_len, const uint8_t *sig,
 					size_t sig_len)
+__weak __alias("sw_crypto_acipher_rsassa_verify");
+
+TEE_Result sw_crypto_acipher_rsassa_verify(uint32_t algo,
+					   struct rsa_public_key *key,
+					   int salt_len __unused,
+					   const uint8_t *msg,
+					   size_t msg_len, const uint8_t *sig,
+					   size_t sig_len)
 {
 	TEE_Result res = TEE_SUCCESS;
 	int lmd_res = 0;
@@ -599,6 +681,14 @@ TEE_Result crypto_acipher_rsassa_verify(uint32_t algo,
 	mbedtls_rsa_context rsa;
 	const mbedtls_pk_info_t *pk_info = NULL;
 	uint32_t md_algo = 0;
+	struct ftmn ftmn = { };
+	unsigned long arg_hash = 0;
+
+	/*
+	 * The caller expects to call crypto_acipher_rsassa_verify(),
+	 * update the hash as needed.
+	 */
+	FTMN_CALLEE_SWAP_HASH(FTMN_FUNC_HASH("crypto_acipher_rsassa_verify"));
 
 	memset(&rsa, 0, sizeof(rsa));
 	mbedtls_rsa_init(&rsa, 0, 0);
@@ -606,8 +696,8 @@ TEE_Result crypto_acipher_rsassa_verify(uint32_t algo,
 	rsa.E = *(mbedtls_mpi *)key->e;
 	rsa.N = *(mbedtls_mpi *)key->n;
 
-	res = tee_hash_get_digest_size(TEE_DIGEST_HASH_TO_ALGO(algo),
-				       &hash_size);
+	res = tee_alg_get_digest_size(TEE_DIGEST_HASH_TO_ALGO(algo),
+				      &hash_size);
 	if (res != TEE_SUCCESS)
 		goto err;
 
@@ -618,7 +708,7 @@ TEE_Result crypto_acipher_rsassa_verify(uint32_t algo,
 
 	bigint_size = crypto_bignum_num_bytes(key->n);
 	if (sig_len < bigint_size) {
-		res = TEE_ERROR_MAC_INVALID;
+		res = TEE_ERROR_SIGNATURE_INVALID;
 		goto err;
 	}
 
@@ -631,6 +721,7 @@ TEE_Result crypto_acipher_rsassa_verify(uint32_t algo,
 	case TEE_ALG_RSASSA_PKCS1_V1_5_SHA256:
 	case TEE_ALG_RSASSA_PKCS1_V1_5_SHA384:
 	case TEE_ALG_RSASSA_PKCS1_V1_5_SHA512:
+		arg_hash = FTMN_FUNC_HASH("mbedtls_rsa_rsassa_pkcs1_v15_verify");
 		lmd_padding = MBEDTLS_RSA_PKCS_V15;
 		break;
 	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA1:
@@ -638,6 +729,7 @@ TEE_Result crypto_acipher_rsassa_verify(uint32_t algo,
 	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA256:
 	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA384:
 	case TEE_ALG_RSASSA_PKCS1_PSS_MGF1_SHA512:
+		arg_hash = FTMN_FUNC_HASH("mbedtls_rsa_rsassa_pss_verify_ext");
 		lmd_padding = MBEDTLS_RSA_PKCS_V21;
 		break;
 	default:
@@ -659,15 +751,24 @@ TEE_Result crypto_acipher_rsassa_verify(uint32_t algo,
 
 	mbedtls_rsa_set_padding(&rsa, lmd_padding, md_algo);
 
+	FTMN_PUSH_LINKED_CALL(&ftmn, arg_hash);
 	lmd_res = pk_info->verify_func(&rsa, md_algo, msg, msg_len,
 				       sig, sig_len);
+	if (!lmd_res)
+		FTMN_SET_CHECK_RES_FROM_CALL(&ftmn, FTMN_INCR0, lmd_res);
+	FTMN_POP_LINKED_CALL(&ftmn);
 	if (lmd_res != 0) {
 		FMSG("verify_func failed, returned 0x%x", -lmd_res);
 		res = TEE_ERROR_SIGNATURE_INVALID;
 		goto err;
 	}
 	res = TEE_SUCCESS;
+	goto out;
+
 err:
+	FTMN_SET_CHECK_RES_NOT_ZERO(&ftmn, FTMN_INCR0, res);
+out:
+	FTMN_CALLEE_DONE_CHECK(&ftmn, FTMN_INCR0, FTMN_STEP_COUNT(1), res);
 	/* Reset mpi to skip freeing here, those mpis will be freed with key */
 	mbedtls_mpi_init(&rsa.E);
 	mbedtls_mpi_init(&rsa.N);

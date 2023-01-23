@@ -1,60 +1,37 @@
-/* LibTomCrypt, modular cryptographic library -- Tom St Denis
- *
- * LibTomCrypt is a library that provides various cryptographic
- * algorithms in a highly modular and flexible manner.
- *
- * The library is free for all purposes without any express
- * guarantee it works.
- */
-#include "tomcrypt.h"
+/* LibTomCrypt, modular cryptographic library -- Tom St Denis */
+/* SPDX-License-Identifier: Unlicense */
+#include "tomcrypt_private.h"
 
 #ifdef LTC_DER
-static const oid_st rsa_oid = {
-   { 1, 2, 840, 113549, 1, 1, 1  },
-   7,
-};
 
-static const oid_st dsa_oid = {
-   { 1, 2, 840, 10040, 4, 1  },
-   6,
-};
+typedef struct {
+   enum ltc_oid_id id;
+   const char* oid;
+} oid_table_entry;
 
-static const oid_st ec_oid = {
-   { 1, 2, 840, 10045, 2, 1 },
-   6,
-};
-
-static const oid_st ec_primef = {
-   { 1, 2, 840, 10045, 1, 1 },
-   6,
+static const oid_table_entry pka_oids[] = {
+                                              { LTC_OID_RSA,       "1.2.840.113549.1.1.1" },
+                                              { LTC_OID_DSA,       "1.2.840.10040.4.1" },
+                                              { LTC_OID_EC,        "1.2.840.10045.2.1" },
+                                              { LTC_OID_EC_PRIMEF, "1.2.840.10045.1.1" },
+                                              { LTC_OID_X25519,    "1.3.101.110" },
+                                              { LTC_OID_ED25519,   "1.3.101.112" },
 };
 
 /*
-   Returns the OID of the public key algorithm.
+   Returns the OID requested.
    @return CRYPT_OK if valid
 */
-int pk_get_oid(int pk, oid_st *st)
+int pk_get_oid(enum ltc_oid_id id, const char **st)
 {
-   switch (pk) {
-      case PKA_RSA:
-         XMEMCPY(st, &rsa_oid, sizeof(*st));
-         break;
-      case PKA_DSA:
-         XMEMCPY(st, &dsa_oid, sizeof(*st));
-         break;
-      case PKA_EC:
-         XMEMCPY(st, &ec_oid, sizeof(*st));
-         break;
-      case PKA_EC_PRIMEF:
-         XMEMCPY(st, &ec_primef, sizeof(*st));
-         break;
-      default:
-         return CRYPT_INVALID_ARG;
+   unsigned int i;
+   LTC_ARGCHK(st != NULL);
+   for (i = 0; i < sizeof(pka_oids)/sizeof(pka_oids[0]); ++i) {
+      if (pka_oids[i].id == id) {
+         *st = pka_oids[i].oid;
+         return CRYPT_OK;
+      }
    }
-   return CRYPT_OK;
+   return CRYPT_INVALID_ARG;
 }
 #endif
-
-/* ref:         $Format:%D$ */
-/* git commit:  $Format:%H$ */
-/* commit time: $Format:%ai$ */

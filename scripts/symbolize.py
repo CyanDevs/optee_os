@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-2-Clause
 #
 # Copyright (c) 2017, Linaro Limited
@@ -6,18 +6,22 @@
 
 
 import argparse
+import errno
 import glob
 import os
 import re
 import subprocess
 import sys
+import termios
 
 CALL_STACK_RE = re.compile('Call stack:')
+TEE_LOAD_ADDR_RE = re.compile(r'TEE load address @ (?P<load_addr>0x[0-9a-f]+)')
 # This gets the address from lines looking like this:
 # E/TC:0  0x001044a8
 STACK_ADDR_RE = re.compile(
     r'[UEIDFM]/(TC|LD):(\?*|[0-9]*) [0-9]* +(?P<addr>0x[0-9a-f]+)')
 ABORT_ADDR_RE = re.compile(r'-abort at address (?P<addr>0x[0-9a-f]+)')
+TA_PANIC_RE = re.compile(r'TA panicked with code (?P<code>0x[0-9a-f]+)')
 REGION_RE = re.compile(r'region +[0-9]+: va (?P<addr>0x[0-9a-f]+) '
                        r'pa 0x[0-9a-f]+ size (?P<size>0x[0-9a-f]+)'
                        r'( flags .{4} (\[(?P<elf_idx>[0-9]+)\])?)?')
@@ -72,6 +76,39 @@ Sample usage:
   ^D
 '''
 
+tee_result_names = {
+        '0xf0100001': 'TEE_ERROR_CORRUPT_OBJECT',
+        '0xf0100002': 'TEE_ERROR_CORRUPT_OBJECT_2',
+        '0xf0100003': 'TEE_ERROR_STORAGE_NOT_AVAILABLE',
+        '0xf0100004': 'TEE_ERROR_STORAGE_NOT_AVAILABLE_2',
+        '0xf0100006': 'TEE_ERROR_CIPHERTEXT_INVALID ',
+        '0xffff0000': 'TEE_ERROR_GENERIC',
+        '0xffff0001': 'TEE_ERROR_ACCESS_DENIED',
+        '0xffff0002': 'TEE_ERROR_CANCEL',
+        '0xffff0003': 'TEE_ERROR_ACCESS_CONFLICT',
+        '0xffff0004': 'TEE_ERROR_EXCESS_DATA',
+        '0xffff0005': 'TEE_ERROR_BAD_FORMAT',
+        '0xffff0006': 'TEE_ERROR_BAD_PARAMETERS',
+        '0xffff0007': 'TEE_ERROR_BAD_STATE',
+        '0xffff0008': 'TEE_ERROR_ITEM_NOT_FOUND',
+        '0xffff0009': 'TEE_ERROR_NOT_IMPLEMENTED',
+        '0xffff000a': 'TEE_ERROR_NOT_SUPPORTED',
+        '0xffff000b': 'TEE_ERROR_NO_DATA',
+        '0xffff000c': 'TEE_ERROR_OUT_OF_MEMORY',
+        '0xffff000d': 'TEE_ERROR_BUSY',
+        '0xffff000e': 'TEE_ERROR_COMMUNICATION',
+        '0xffff000f': 'TEE_ERROR_SECURITY',
+        '0xffff0010': 'TEE_ERROR_SHORT_BUFFER',
+        '0xffff0011': 'TEE_ERROR_EXTERNAL_CANCEL',
+        '0xffff300f': 'TEE_ERROR_OVERFLOW',
+        '0xffff3024': 'TEE_ERROR_TARGET_DEAD',
+        '0xffff3041': 'TEE_ERROR_STORAGE_NO_SPACE',
+        '0xffff3071': 'TEE_ERROR_MAC_INVALID',
+        '0xffff3072': 'TEE_ERROR_SIGNATURE_INVALID',
+        '0xffff5000': 'TEE_ERROR_TIME_NOT_SET',
+        '0xffff5001': 'TEE_ERROR_TIME_NEEDS_RESET',
+    }
+
 
 def get_args():
     parser = argparse.ArgumentParser(
@@ -103,11 +140,13 @@ class Symbolizer(object):
     def my_Popen(self, cmd):
         try:
             return subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                                    stdout=subprocess.PIPE)
+                                    stdout=subprocess.PIPE,
+                                    universal_newlines=True,
+                                    bufsize=1)
         except OSError as e:
-            if e.errno == os.errno.ENOENT:
-                print >> sys.stderr, "*** Error:", cmd[0] + \
-                    ": command not found"
+            if e.errno == errno.ENOENT:
+                print("*** Error:{}: command not found".format(cmd[0]),
+                      file=sys.stderr)
                 sys.exit(1)
 
     def get_elf(self, elf_or_uuid):
@@ -120,26 +159,20 @@ class Symbolizer(object):
             if elf:
                 return elf[0]
 
-    def set_arch(self):
-        if self._arch:
-            return
+    def set_arch(self, elf):
         self._arch = os.getenv('CROSS_COMPILE')
         if self._arch:
             return
-        elf = self.get_elf(self._elfs[0][0])
-        if elf is None:
-            return
-        p = subprocess.Popen(['file', self.get_elf(self._elfs[0][0])],
-                             stdout=subprocess.PIPE)
+        p = subprocess.Popen(['file', '-L', elf], stdout=subprocess.PIPE)
         output = p.stdout.readlines()
         p.terminate()
-        if 'ARM aarch64,' in output[0]:
+        if b'ARM aarch64,' in output[0]:
             self._arch = 'aarch64-linux-gnu-'
-        elif 'ARM,' in output[0]:
+        elif b'ARM,' in output[0]:
             self._arch = 'arm-linux-gnueabihf-'
 
-    def arch_prefix(self, cmd):
-        self.set_arch()
+    def arch_prefix(self, cmd, elf):
+        self.set_arch(elf)
         if self._arch is None:
             return ''
         return self._arch + cmd
@@ -155,7 +188,7 @@ class Symbolizer(object):
         elf = self.get_elf(elf_name)
         if not elf:
             return
-        cmd = self.arch_prefix('addr2line')
+        cmd = self.arch_prefix('addr2line', elf)
         if not cmd:
             return
         self._addr2line = self.my_Popen([cmd, '-f', '-p', '-e', elf])
@@ -174,16 +207,18 @@ class Symbolizer(object):
                     elf_idx = r[2]
                     if elf_idx is not None:
                         return self._elfs[int(elf_idx)][1]
-            return None
+            # In case address is not found in TA ELF file, fallback to tee.elf
+            # especially to symbolize mixed (user-space and kernel) addresses
+            # which is true when syscall ftrace is enabled along with TA
+            # ftrace.
+            return self._tee_load_addr
         else:
             # tee.elf
-            return '0x0'
+            return self._tee_load_addr
 
     def elf_for_addr(self, addr):
         l_addr = self.elf_load_addr(addr)
-        if l_addr is None:
-            return None
-        if l_addr is '0x0':
+        if l_addr == self._tee_load_addr:
             return 'tee.elf'
         for k in self._elfs:
             e = self._elfs[k]
@@ -204,22 +239,32 @@ class Symbolizer(object):
         self.spawn_addr2line(self.elf_for_addr(addr))
         if not reladdr or not self._addr2line:
             return '???'
+        if self.elf_for_addr(addr) == 'tee.elf':
+            reladdr = '0x{:x}'.format(int(reladdr, 16) +
+                                      int(self.first_vma('tee.elf'), 16))
         try:
-            print >> self._addr2line.stdin, reladdr
+            print(reladdr, file=self._addr2line.stdin)
             ret = self._addr2line.stdout.readline().rstrip('\n')
         except IOError:
             ret = '!!!'
         return ret
 
+    # Armv8.5 with Memory Tagging Extension (MTE)
+    def strip_armv85_mte_tag(self, addr):
+        i_addr = int(addr, 16)
+        i_addr &= ~(0xf << 56)
+        return '0x{:x}'.format(i_addr)
+
     def symbol_plus_offset(self, addr):
         ret = ''
         prevsize = 0
+        addr = self.strip_armv85_mte_tag(addr)
         reladdr = self.subtract_load_addr(addr)
         elf_name = self.elf_for_addr(addr)
         if elf_name is None:
             return ''
         elf = self.get_elf(elf_name)
-        cmd = self.arch_prefix('nm')
+        cmd = self.arch_prefix('nm', elf)
         if not reladdr or not elf or not cmd:
             return ''
         ireladdr = int(reladdr, 16)
@@ -260,7 +305,7 @@ class Symbolizer(object):
         if elf_name is None:
             return ''
         elf = self.get_elf(elf_name)
-        cmd = self.arch_prefix('objdump')
+        cmd = self.arch_prefix('objdump', elf)
         if not reladdr or not elf or not cmd:
             return ''
         iaddr = int(reladdr, 16)
@@ -307,7 +352,9 @@ class Symbolizer(object):
         if elf_name in self._sections:
             return
         elf = self.get_elf(elf_name)
-        cmd = self.arch_prefix('objdump')
+        if not elf:
+            return
+        cmd = self.arch_prefix('objdump', elf)
         if not elf or not cmd:
             return
         self._sections[elf_name] = []
@@ -319,6 +366,10 @@ class Symbolizer(object):
                 if 'ALLOC' in line:
                     self._sections[elf_name].append([name, int(vma, 16),
                                                      int(size, 16)])
+
+    def first_vma(self, elf_name):
+        self.read_sections(elf_name)
+        return '0x{:x}'.format(self._sections[elf_name][0][1])
 
     def overlaps(self, section, addr, size):
         sec_addr = section[1]
@@ -357,6 +408,7 @@ class Symbolizer(object):
         self._sections = {}  # {elf_name: [[name, addr, size], ...], ...}
         self._regions = []   # [[addr, size, elf_idx, saved line], ...]
         self._elfs = {0: ["tee.elf", 0]}  # {idx: [uuid, load_addr], ...}
+        self._tee_load_addr = '0x0'
         self._func_graph_found = False
         self._func_graph_skip_line = True
 
@@ -374,7 +426,15 @@ class Symbolizer(object):
                 post = match.end('addr')
                 self._out.write(line[:pre])
                 self._out.write(addr)
-                res = self.resolve(addr)
+                # The call stack contains return addresses (LR/ELR values).
+                # Heuristic: subtract 2 to obtain the call site of the function
+                # or the location of the exception. This value works for A64,
+                # A32 as well as Thumb.
+                pc = 0
+                lr = int(addr, 16)
+                if lr:
+                    pc = lr - 2
+                res = self.resolve('0x{:x}'.format(pc))
                 res = self.pretty_print_path(res)
                 self._out.write(' ' + res)
                 self._out.write(line[post:])
@@ -419,6 +479,16 @@ class Symbolizer(object):
             self._elfs[i] = [match.group('uuid'), match.group('load_addr'),
                              line]
             return
+        match = re.search(TA_PANIC_RE, line)
+        if match:
+            code = match.group('code')
+            if code in tee_result_names:
+                line = line.strip() + ' (' + tee_result_names[code] + ')\n'
+            self._out.write(line)
+            return
+        match = re.search(TEE_LOAD_ADDR_RE, line)
+        if match:
+            self._tee_load_addr = match.group('load_addr')
         match = re.search(CALL_STACK_RE, line)
         if match:
             self._call_stack_found = True
@@ -477,9 +547,21 @@ def main():
         args.dirs = []
     symbolizer = Symbolizer(sys.stdout, args.dirs, args.strip_path)
 
-    for line in sys.stdin:
-        symbolizer.write(line)
-    symbolizer.flush()
+    fd = sys.stdin.fileno()
+    isatty = os.isatty(fd)
+    if isatty:
+        old = termios.tcgetattr(fd)
+        new = termios.tcgetattr(fd)
+        new[3] = new[3] & ~termios.ECHO  # lflags
+    try:
+        if isatty:
+            termios.tcsetattr(fd, termios.TCSADRAIN, new)
+        for line in sys.stdin:
+            symbolizer.write(line)
+    finally:
+        symbolizer.flush()
+        if isatty:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 if __name__ == "__main__":

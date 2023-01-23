@@ -3,12 +3,16 @@
  * Copyright (c) 2014, STMicroelectronics International N.V.
  */
 #include <compiler.h>
+#include <config.h>
+#include <malloc.h>
 #include <tee_ta_api.h>
 #include <tee_internal_api_extensions.h>
 #include <trace.h>
 #include <user_ta_header.h>
 #include <user_ta_header_defines.h>
 #include <utee_syscalls.h>
+
+extern void *__stack_chk_guard;
 
 int trace_level = TRACE_LEVEL;
 
@@ -25,37 +29,56 @@ const char trace_ext_prefix[]  = "TA";
 /* exprted to user_ta_header.c, built within TA */
 struct utee_params;
 
+#ifdef ARM32
+#define _C_FUNCTION(name) name##_c
+#else
+#define _C_FUNCTION(name) name
+#endif /* ARM32 */
+
+/* From libutee */
 TEE_Result __utee_entry(unsigned long func, unsigned long session_id,
 			struct utee_params *up, unsigned long cmd_id);
 
-void __noreturn __ta_entry(unsigned long func, unsigned long session_id,
-			   struct utee_params *up, unsigned long cmd_id);
+void __noreturn _C_FUNCTION(__ta_entry)(unsigned long func,
+					unsigned long session_id,
+					struct utee_params *up,
+					unsigned long cmd_id);
 
-void __noreturn __ta_entry(unsigned long func, unsigned long session_id,
-			   struct utee_params *up, unsigned long cmd_id)
+void __noreturn _C_FUNCTION(__ta_entry)(unsigned long func,
+					unsigned long session_id,
+					struct utee_params *up,
+					unsigned long cmd_id)
 {
-	TEE_Result res = TEE_SUCCESS;
+	static bool stack_canary_inited;
+	TEE_Result res = TEE_ERROR_GENERIC;
 
-#if defined(ARM32) && defined(CFG_UNWIND)
-	/*
-	 * This function is the bottom of the user call stack: mark it as such
-	 * so that the unwinding code won't try to go further down.
-	 */
-	asm(".cantunwind");
-#endif
+	if (IS_ENABLED(_CFG_TA_STACK_PROTECTOR) && !stack_canary_inited) {
+		uintptr_t canary = 0;
+
+		res = _utee_cryp_random_number_generate(&canary,
+							sizeof(canary));
+		if (res != TEE_SUCCESS)
+			_utee_return(res);
+
+		/* Leave null byte in canary to prevent string base exploit */
+		canary &= ~0xffUL;
+
+		__stack_chk_guard = (void *)canary;
+		stack_canary_inited = true;
+	}
 
 	res = __utee_entry(func, session_id, up, cmd_id);
 
-#if defined(CFG_TA_FTRACE_SUPPORT)
+#if defined(CFG_FTRACE_SUPPORT)
 	/*
 	 * __ta_entry is the first TA API called from TEE core. As it being
 	 * __noreturn API, we need to call ftrace_return in this API just
-	 * before utee_return syscall to get proper ftrace call graph.
+	 * before _utee_return syscall to get proper ftrace call graph.
 	 */
 	ftrace_return();
 #endif
 
-	utee_return(res);
+	_utee_return(res);
 }
 
 /*
@@ -98,6 +121,10 @@ uintptr_t tainfo_get_rva(void)
 }
 
 /* Keeping the heap in bss */
+#if TA_DATA_SIZE < MALLOC_INITIAL_POOL_MIN_SIZE
+#error TA_DATA_SIZE too small
+#endif
+
 uint8_t ta_heap[TA_DATA_SIZE];
 const size_t ta_heap_size = sizeof(ta_heap);
 
@@ -134,7 +161,7 @@ const struct user_ta_property ta_props[] = {
 
 const size_t ta_num_props = sizeof(ta_props) / sizeof(ta_props[0]);
 
-#ifdef CFG_TA_FTRACE_SUPPORT
+#ifdef CFG_FTRACE_SUPPORT
 struct __ftrace_info __ftrace_info = {
 #ifdef __ILP32__
 	.buf_start.ptr32 = { .lo = (uint32_t)&__ftrace_buf_start },

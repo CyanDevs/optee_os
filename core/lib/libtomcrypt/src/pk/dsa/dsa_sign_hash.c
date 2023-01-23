@@ -1,42 +1,6 @@
-// SPDX-License-Identifier: BSD-2-Clause
-/*
- * Copyright (c) 2001-2007, Tom St Denis
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- * this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- * this list of conditions and the following disclaimer in the documentation
- * and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- */
-
-/* LibTomCrypt, modular cryptographic library -- Tom St Denis
- *
- * LibTomCrypt is a library that provides various cryptographic
- * algorithms in a highly modular and flexible manner.
- *
- * The library is free for all purposes without any express
- * guarantee it works.
- *
- * Tom St Denis, tomstdenis@gmail.com, http://libtom.org
- */
-#include "tomcrypt.h"
+/* LibTomCrypt, modular cryptographic library -- Tom St Denis */
+/* SPDX-License-Identifier: Unlicense */
+#include "tomcrypt_private.h"
 
 /**
    @file dsa_sign_hash.c
@@ -58,7 +22,7 @@
 */
 int dsa_sign_hash_raw(const unsigned char *in,  unsigned long inlen,
                                    void   *r,   void *s,
-                               prng_state *prng, int wprng, dsa_key *key)
+                               prng_state *prng, int wprng, const dsa_key *key)
 {
    void         *k, *kinv, *tmp;
    unsigned char *buf;
@@ -87,7 +51,7 @@ int dsa_sign_hash_raw(const unsigned char *in,  unsigned long inlen,
    }
 
    /* Init our temps */
-   if ((err = mp_init_multi(&k, &kinv, &tmp, NULL)) != CRYPT_OK)                       { goto ERRBUF; }
+   if ((err = mp_init_multi(&k, &kinv, &tmp, LTC_NULL)) != CRYPT_OK)                   { goto ERRBUF; }
 
    qbits = mp_count_bits(key->q);
 retry:
@@ -112,6 +76,9 @@ retry:
 
    if (mp_iszero(r) == LTC_MP_YES)                                                     { goto retry; }
 
+   /* FIPS 186-4 4.6: use leftmost min(bitlen(q), bitlen(hash)) bits of 'hash'*/
+   inlen = MIN(inlen, (unsigned long)(key->qord));
+
    /* now find s = (in + xr)/k mod q */
    if ((err = mp_read_unsigned_bin(tmp, (unsigned char *)in, inlen)) != CRYPT_OK)      { goto error; }
    if ((err = mp_mul(key->x, r, s)) != CRYPT_OK)                                       { goto error; }
@@ -121,8 +88,8 @@ retry:
    if (mp_iszero(s) == LTC_MP_YES)                                                     { goto retry; }
 
    err = CRYPT_OK;
-error: 
-   mp_clear_multi(k, kinv, tmp, NULL);
+error:
+   mp_clear_multi(k, kinv, tmp, LTC_NULL);
 ERRBUF:
 #ifdef LTC_CLEAN_STACK
    zeromem(buf, LTC_MDSA_MAX_GROUP);
@@ -144,7 +111,7 @@ ERRBUF:
 */
 int dsa_sign_hash(const unsigned char *in,  unsigned long inlen,
                         unsigned char *out, unsigned long *outlen,
-                        prng_state *prng, int wprng, dsa_key *key)
+                        prng_state *prng, int wprng, const dsa_key *key)
 {
    void         *r, *s;
    int           err;
@@ -154,7 +121,7 @@ int dsa_sign_hash(const unsigned char *in,  unsigned long inlen,
    LTC_ARGCHK(outlen  != NULL);
    LTC_ARGCHK(key     != NULL);
 
-   if (mp_init_multi(&r, &s, NULL) != CRYPT_OK) {
+   if (mp_init_multi(&r, &s, LTC_NULL) != CRYPT_OK) {
       return CRYPT_MEM;
    }
 
@@ -162,18 +129,14 @@ int dsa_sign_hash(const unsigned char *in,  unsigned long inlen,
       goto error;
    }
 
-   err = der_encode_sequence_multi(out, outlen, 
-                             LTC_ASN1_INTEGER, 1UL, r, 
-                             LTC_ASN1_INTEGER, 1UL, s, 
+   err = der_encode_sequence_multi(out, outlen,
+                             LTC_ASN1_INTEGER, 1UL, r,
+                             LTC_ASN1_INTEGER, 1UL, s,
                              LTC_ASN1_EOL,     0UL, NULL);
 
 error:
-   mp_clear_multi(r, s, NULL);
+   mp_clear_multi(r, s, LTC_NULL);
    return err;
 }
 
 #endif
-
-/* $Source: /cvs/libtom/libtomcrypt/src/pk/dsa/dsa_sign_hash.c,v $ */
-/* $Revision: 1.14 $ */
-/* $Date: 2007/05/12 14:32:35 $ */

@@ -5,16 +5,16 @@
 
 #include <console.h>
 #include <io.h>
-#include <kernel/generic_boot.h>
+#include <kernel/boot.h>
 #include <kernel/misc.h>
 #include <kernel/panic.h>
-#include <kernel/pm_stubs.h>
 #include <mm/core_mmu.h>
 #include <mm/core_memprot.h>
 #include <platform_config.h>
 #include <stdint.h>
 #include <sm/optee_smc.h>
 #include <sm/psci.h>
+#include <sm/std_smc.h>
 #include <tee/entry_std.h>
 #include <tee/entry_fast.h>
 
@@ -27,6 +27,7 @@
 int psci_features(uint32_t psci_fid)
 {
 	switch (psci_fid) {
+	case ARM_SMCCC_VERSION:
 	case PSCI_PSCI_FEATURES:
 	case PSCI_VERSION:
 	case PSCI_SYSTEM_RESET:
@@ -46,7 +47,8 @@ uint32_t psci_version(void)
 
 void psci_system_reset(void)
 {
-	vaddr_t sysctrl = core_mmu_get_va(SYS_CTRL_BASE, MEM_AREA_IO_SEC);
+	vaddr_t sysctrl = core_mmu_get_va(SYS_CTRL_BASE, MEM_AREA_IO_SEC,
+					  SYS_CTRL_SIZE);
 
 	if (!sysctrl) {
 		EMSG("no sysctrl mapping, hang here");
@@ -62,8 +64,10 @@ int psci_cpu_on(uint32_t core_idx, uint32_t entry,
 {
 	uint32_t val = 0;
 	size_t pos = get_core_pos_mpidr(core_idx);
-	vaddr_t bootsram = core_mmu_get_va(BOOTSRAM_BASE, MEM_AREA_IO_SEC);
-	vaddr_t crg = core_mmu_get_va(CPU_CRG_BASE, MEM_AREA_IO_SEC);
+	vaddr_t bootsram = core_mmu_get_va(BOOTSRAM_BASE, MEM_AREA_IO_SEC,
+					   BOOTSRAM_SIZE);
+	vaddr_t crg = core_mmu_get_va(CPU_CRG_BASE, MEM_AREA_IO_SEC,
+				      CPU_CRG_SIZE);
 
 	if (!bootsram || !crg) {
 		EMSG("No bootsram or crg mapping");
@@ -74,7 +78,7 @@ int psci_cpu_on(uint32_t core_idx, uint32_t entry,
 		return PSCI_RET_INVALID_PARAMETERS;
 
 	/* set secondary core's NS entry addresses */
-	generic_boot_set_core_ns_entry(pos, entry, context_id);
+	boot_set_core_ns_entry(pos, entry, context_id);
 
 	val = virt_to_phys((void *)TEE_TEXT_VA_START);
 	io_write32(bootsram + REG_CPU_START_ADDR, val);

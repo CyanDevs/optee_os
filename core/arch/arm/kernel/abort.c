@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause
 /*
- * Copyright (c) 2015, Linaro Limited
+ * Copyright (c) 2015-2022, Linaro Limited
  */
 
 #include <arm.h>
@@ -9,19 +9,18 @@
 #include <kernel/misc.h>
 #include <kernel/panic.h>
 #include <kernel/tee_ta_manager.h>
-#include <kernel/unwind.h>
-#include <kernel/user_ta.h>
+#include <kernel/thread_private.h>
+#include <kernel/user_mode_ctx.h>
 #include <mm/core_mmu.h>
 #include <mm/mobj.h>
 #include <mm/tee_pager.h>
 #include <tee/tee_svc.h>
 #include <trace.h>
-
-#include "thread_private.h"
+#include <unw/unwind.h>
 
 enum fault_type {
-	FAULT_TYPE_USER_TA_PANIC,
-	FAULT_TYPE_USER_TA_VFP,
+	FAULT_TYPE_USER_MODE_PANIC,
+	FAULT_TYPE_USER_MODE_VFP,
 	FAULT_TYPE_PAGEABLE,
 	FAULT_TYPE_IGNORE,
 };
@@ -35,8 +34,6 @@ enum fault_type {
 static void __print_stack_unwind(struct abort_info *ai)
 {
 	struct unwind_state_arm32 state = { };
-	vaddr_t exidx = (vaddr_t)__exidx_start;
-	size_t exidx_sz = (vaddr_t)__exidx_end - (vaddr_t)__exidx_start;
 	uint32_t mode = ai->regs->spsr & CPSR_MODE_MASK;
 	uint32_t sp = 0;
 	uint32_t lr = 0;
@@ -68,8 +65,7 @@ static void __print_stack_unwind(struct abort_info *ai)
 	state.registers[14] = lr;
 	state.registers[15] = ai->pc;
 
-	print_stack_arm32(TRACE_ERROR, &state, exidx, exidx_sz,
-			  thread_stack_start(), thread_stack_size());
+	print_stack_arm32(&state, thread_stack_start(), thread_stack_size());
 }
 #endif /* ARM32 */
 
@@ -82,8 +78,7 @@ static void __print_stack_unwind(struct abort_info *ai)
 		.fp = ai->regs->x29,
 	};
 
-	print_stack_arm64(TRACE_ERROR, &state, thread_stack_start(),
-			  thread_stack_size());
+	print_stack_arm64(&state, thread_stack_start(), thread_stack_size());
 }
 #endif /*ARM64*/
 
@@ -118,6 +113,8 @@ static __maybe_unused const char *fault_to_str(uint32_t abort_type,
 		return " (read permission fault)";
 	case CORE_MMU_FAULT_WRITE_PERMISSION:
 		return " (write permission fault)";
+	case CORE_MMU_FAULT_TAG_CHECK:
+		return " (tag check fault)";
 	default:
 		return "";
 	}
@@ -222,8 +219,12 @@ static void __abort_print(struct abort_info *ai, bool stack_dump)
 
 	__print_abort_info(ai, "Core");
 
-	if (stack_dump)
+	if (stack_dump) {
+		trace_printf_helper_raw(TRACE_ERROR, true,
+					"TEE load address @ %#"PRIxVA,
+					VCORE_START_VA);
 		__print_stack_unwind(ai);
+	}
 }
 
 void abort_print(struct abort_info *ai)
@@ -237,14 +238,11 @@ void abort_print_error(struct abort_info *ai)
 }
 
 /* This function must be called from a normal thread */
-void abort_print_current_ta(void)
+void abort_print_current_ts(void)
 {
 	struct thread_specific_data *tsd = thread_get_tsd();
 	struct abort_info ai = { };
-	struct tee_ta_session *s = NULL;
-
-	if (tee_ta_get_current_session(&s) != TEE_SUCCESS)
-		panic();
+	struct ts_session *s = ts_get_current_session();
 
 	ai.abort_type = tsd->abort_type;
 	ai.fault_descr = tsd->abort_descr;
@@ -252,13 +250,17 @@ void abort_print_current_ta(void)
 	ai.pc = tsd->abort_regs.elr;
 	ai.regs = &tsd->abort_regs;
 
-	if (ai.abort_type != ABORT_TYPE_TA_PANIC)
-		__print_abort_info(&ai, "User TA");
+	if (ai.abort_type != ABORT_TYPE_USER_MODE_PANIC)
+		__print_abort_info(&ai, "User mode");
 
 	s->ctx->ops->dump_state(s->ctx);
 
-	if (s->ctx->ops->dump_ftrace)
+#if defined(CFG_FTRACE_SUPPORT)
+	if (s->ctx->ops->dump_ftrace) {
+		s->fbuf = NULL;
 		s->ctx->ops->dump_ftrace(s->ctx);
+	}
+#endif
 }
 
 static void save_abort_info_in_tsd(struct abort_info *ai)
@@ -323,7 +325,7 @@ static void set_abort_info(uint32_t abort_type __unused,
 #endif /*ARM64*/
 
 #ifdef ARM32
-static void handle_user_ta_panic(struct abort_info *ai)
+static void handle_user_mode_panic(struct abort_info *ai)
 {
 	/*
 	 * It was a user exception, stop user execution and return
@@ -345,9 +347,10 @@ static void handle_user_ta_panic(struct abort_info *ai)
 #endif /*ARM32*/
 
 #ifdef ARM64
-static void handle_user_ta_panic(struct abort_info *ai)
+static void handle_user_mode_panic(struct abort_info *ai)
 {
-	uint32_t daif;
+	struct thread_ctx *tc __maybe_unused = NULL;
+	uint32_t daif = 0;
 
 	/*
 	 * It was a user exception, stop user execution and return
@@ -359,6 +362,16 @@ static void handle_user_ta_panic(struct abort_info *ai)
 	ai->regs->elr = (vaddr_t)thread_unwind_user_mode;
 	ai->regs->sp_el0 = thread_get_saved_thread_sp();
 
+#if defined(CFG_CORE_PAUTH)
+	/*
+	 * We're going to return to the privileged core thread, update the
+	 * APIA key to match the key used by the thread.
+	 */
+	tc = threads + thread_get_id();
+	ai->regs->apiakey_hi = tc->keys.apia_hi;
+	ai->regs->apiakey_lo = tc->keys.apia_lo;
+#endif
+
 	daif = (ai->regs->spsr >> SPSR_32_AIF_SHIFT) & SPSR_32_AIF_MASK;
 	/* XXX what about DAIF_D? */
 	ai->regs->spsr = SPSR_64(SPSR_64_MODE_EL1, SPSR_64_MODE_SP_EL0, daif);
@@ -366,14 +379,11 @@ static void handle_user_ta_panic(struct abort_info *ai)
 #endif /*ARM64*/
 
 #ifdef CFG_WITH_VFP
-static void handle_user_ta_vfp(void)
+static void handle_user_mode_vfp(void)
 {
-	struct tee_ta_session *s;
+	struct ts_session *s = ts_get_current_session();
 
-	if (tee_ta_get_current_session(&s) != TEE_SUCCESS)
-		panic();
-
-	thread_user_enable_vfp(&to_user_ta_ctx(s->ctx)->vfp);
+	thread_user_enable_vfp(&to_user_mode_ctx(s->ctx)->vfp);
 }
 #endif /*CFG_WITH_VFP*/
 
@@ -443,13 +453,26 @@ static bool is_vfp_fault(struct abort_info *ai __unused)
 }
 #endif  /*CFG_WITH_VFP && CFG_WITH_USER_TA*/
 
+bool abort_is_write_fault(struct abort_info *ai)
+{
+#ifdef ARM32
+	unsigned int write_not_read = 11;
+#endif
+#ifdef ARM64
+	unsigned int write_not_read = 6;
+#endif
+
+	return ai->abort_type == ABORT_TYPE_DATA &&
+	       (ai->fault_descr & BIT(write_not_read));
+}
+
 static enum fault_type get_fault_type(struct abort_info *ai)
 {
 	if (abort_is_user_exception(ai)) {
 		if (is_vfp_fault(ai))
-			return FAULT_TYPE_USER_TA_VFP;
+			return FAULT_TYPE_USER_MODE_VFP;
 #ifndef CFG_WITH_PAGER
-		return FAULT_TYPE_USER_TA_PANIC;
+		return FAULT_TYPE_USER_MODE_PANIC;
 #endif
 	}
 
@@ -460,7 +483,7 @@ static enum fault_type get_fault_type(struct abort_info *ai)
 
 	if (ai->abort_type == ABORT_TYPE_UNDEF) {
 		if (abort_is_user_exception(ai))
-			return FAULT_TYPE_USER_TA_PANIC;
+			return FAULT_TYPE_USER_MODE_PANIC;
 		abort_print_error(ai);
 		panic("[abort] undefined abort (trap CPU)");
 	}
@@ -468,14 +491,14 @@ static enum fault_type get_fault_type(struct abort_info *ai)
 	switch (core_mmu_get_fault_type(ai->fault_descr)) {
 	case CORE_MMU_FAULT_ALIGNMENT:
 		if (abort_is_user_exception(ai))
-			return FAULT_TYPE_USER_TA_PANIC;
+			return FAULT_TYPE_USER_MODE_PANIC;
 		abort_print_error(ai);
 		panic("[abort] alignement fault!  (trap CPU)");
 		break;
 
 	case CORE_MMU_FAULT_ACCESS_BIT:
 		if (abort_is_user_exception(ai))
-			return FAULT_TYPE_USER_TA_PANIC;
+			return FAULT_TYPE_USER_MODE_PANIC;
 		abort_print_error(ai);
 		panic("[abort] access bit fault!  (trap CPU)");
 		break;
@@ -497,6 +520,13 @@ static enum fault_type get_fault_type(struct abort_info *ai)
 		DMSG("[abort] Ignoring async external abort!");
 		return FAULT_TYPE_IGNORE;
 
+	case CORE_MMU_FAULT_TAG_CHECK:
+		if (abort_is_user_exception(ai))
+			return FAULT_TYPE_USER_MODE_PANIC;
+		abort_print_error(ai);
+		panic("[abort] Tag check fault! (trap CPU)");
+		break;
+
 	case CORE_MMU_FAULT_OTHER:
 	default:
 		if (!abort_is_user_exception(ai))
@@ -516,15 +546,15 @@ void abort_handler(uint32_t abort_type, struct thread_abort_regs *regs)
 	switch (get_fault_type(&ai)) {
 	case FAULT_TYPE_IGNORE:
 		break;
-	case FAULT_TYPE_USER_TA_PANIC:
+	case FAULT_TYPE_USER_MODE_PANIC:
 		DMSG("[abort] abort in User mode (TA will panic)");
 		save_abort_info_in_tsd(&ai);
 		vfp_disable();
-		handle_user_ta_panic(&ai);
+		handle_user_mode_panic(&ai);
 		break;
 #ifdef CFG_WITH_VFP
-	case FAULT_TYPE_USER_TA_VFP:
-		handle_user_ta_vfp();
+	case FAULT_TYPE_USER_MODE_VFP:
+		handle_user_mode_vfp();
 		break;
 #endif
 	case FAULT_TYPE_PAGEABLE:
@@ -544,7 +574,7 @@ void abort_handler(uint32_t abort_type, struct thread_abort_regs *regs)
 			DMSG("[abort] abort in User mode (TA will panic)");
 			save_abort_info_in_tsd(&ai);
 			vfp_disable();
-			handle_user_ta_panic(&ai);
+			handle_user_mode_panic(&ai);
 		}
 		break;
 	}

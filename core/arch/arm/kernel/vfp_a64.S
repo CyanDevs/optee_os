@@ -5,8 +5,6 @@
 
 #include <asm.S>
 
-	.section .text.vfp_asm
-
 /* void vfp_save_extension_regs(struct vfp_reg regs[VFP_NUM_REGS]); */
 FUNC vfp_save_extension_regs , :
 	stp	q0, q1, [x0, #16 * 0]
@@ -48,3 +46,5 @@ FUNC vfp_restore_extension_regs , :
 	ldp	q30, q31, [x0, #16 * 30]
 	ret
 END_FUNC vfp_restore_extension_regs
+
+BTI(emit_aarch64_feature_1_and     GNU_PROPERTY_AARCH64_FEATURE_1_BTI)

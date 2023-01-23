@@ -12,7 +12,7 @@
 #if defined(CFG_TEE_CORE_DEBUG)
 #define __panic(str)	__do_panic(__FILE__, __LINE__, __func__, str)
 #else
-#define __panic(str)	__do_panic((void *)0, 0, (void *)0, (void *)0)
+#define __panic(str)	__do_panic((void *)0, 0, (void *)0, str)
 #endif
 
 void __do_panic(const char *file, const int line, const char *func,
@@ -32,5 +32,11 @@ void __do_panic(const char *file, const int line, const char *func,
 #define _panic1(s)	__panic(s)
 #define _panic_fn(a, b, name, ...) name
 #define panic(...) _panic_fn("", ##__VA_ARGS__, _panic1, _panic0)(__VA_ARGS__)
+
+/*
+ * Weak function used in __do_panic() to put the current CPU on hold.
+ * If no arch-specific override is provided, defaults to a busy loop.
+ */
+void cpu_idle(void);
 
 #endif /*KERNEL_PANIC_H*/

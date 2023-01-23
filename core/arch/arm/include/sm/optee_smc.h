@@ -1,9 +1,11 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * Copyright (c) 2015, Linaro Limited
+ * Copyright (c) 2015-2021, Linaro Limited
  */
 #ifndef OPTEE_SMC_H
 #define OPTEE_SMC_H
+
+#include <stdint.h>
 
 /*
  * This file is exported by OP-TEE and is in kept in sync between secure
@@ -15,15 +17,15 @@
  * macros below.
  */
 
-#define OPTEE_SMC_32			0
-#define OPTEE_SMC_64			0x40000000
-#define OPTEE_SMC_FAST_CALL		0x80000000
-#define OPTEE_SMC_STD_CALL		0
+#define OPTEE_SMC_32			U(0)
+#define OPTEE_SMC_64			U(0x40000000)
+#define OPTEE_SMC_FAST_CALL		U(0x80000000)
+#define OPTEE_SMC_STD_CALL		U(0)
 
-#define OPTEE_SMC_OWNER_MASK		0x3F
-#define OPTEE_SMC_OWNER_SHIFT		24
+#define OPTEE_SMC_OWNER_MASK		U(0x3F)
+#define OPTEE_SMC_OWNER_SHIFT		U(24)
 
-#define OPTEE_SMC_FUNC_MASK		0xFFFF
+#define OPTEE_SMC_FUNC_MASK		U(0xFFFF)
 
 #define OPTEE_SMC_IS_FAST_CALL(smc_val)	((smc_val) & OPTEE_SMC_FAST_CALL)
 #define OPTEE_SMC_IS_64(smc_val)	((smc_val) & OPTEE_SMC_64)
@@ -44,21 +46,21 @@
 	OPTEE_SMC_CALL_VAL(OPTEE_SMC_32, OPTEE_SMC_FAST_CALL, \
 			   OPTEE_SMC_OWNER_TRUSTED_OS, (func_num))
 
-#define OPTEE_SMC_OWNER_ARCH		0
-#define OPTEE_SMC_OWNER_CPU		1
-#define OPTEE_SMC_OWNER_SIP		2
-#define OPTEE_SMC_OWNER_OEM		3
-#define OPTEE_SMC_OWNER_STANDARD	4
-#define OPTEE_SMC_OWNER_TRUSTED_APP	48
-#define OPTEE_SMC_OWNER_TRUSTED_OS	50
+#define OPTEE_SMC_OWNER_ARCH		U(0)
+#define OPTEE_SMC_OWNER_CPU		U(1)
+#define OPTEE_SMC_OWNER_SIP		U(2)
+#define OPTEE_SMC_OWNER_OEM		U(3)
+#define OPTEE_SMC_OWNER_STANDARD	U(4)
+#define OPTEE_SMC_OWNER_TRUSTED_APP	U(48)
+#define OPTEE_SMC_OWNER_TRUSTED_OS	U(50)
 
-#define OPTEE_SMC_OWNER_TRUSTED_OS_OPTEED 62
-#define OPTEE_SMC_OWNER_TRUSTED_OS_API	63
+#define OPTEE_SMC_OWNER_TRUSTED_OS_OPTEED U(62)
+#define OPTEE_SMC_OWNER_TRUSTED_OS_API	U(63)
 
 /*
  * Function specified by SMC Calling convention.
  */
-#define OPTEE_SMC_FUNCID_CALLS_COUNT	0xFF00
+#define OPTEE_SMC_FUNCID_CALLS_COUNT	U(0xFF00)
 #define OPTEE_SMC_CALLS_COUNT \
 	OPTEE_SMC_CALL_VAL(OPTEE_SMC_32, OPTEE_SMC_FAST_CALL, \
 			   OPTEE_SMC_OWNER_TRUSTED_OS_API, \
@@ -68,7 +70,7 @@
  * Normal cached memory (write-back), shareable for SMP systems and not
  * shareable for UP systems.
  */
-#define OPTEE_SMC_SHM_CACHED		1
+#define OPTEE_SMC_SHM_CACHED		U(1)
 
 /*
  * a0..a7 is used as register names in the descriptions below, on arm32
@@ -133,12 +135,35 @@
 /*
  * Call with struct optee_msg_arg as argument
  *
- * Call register usage:
- * a0	SMC Function ID, OPTEE_SMC*CALL_WITH_ARG
+ * When called with OPTEE_SMC_CALL_WITH_RPC_ARG or
+ * OPTEE_SMC_CALL_WITH_REGD_ARG in a0 there is one RPC struct optee_msg_arg
+ * following after the first struct optee_msg_arg. The RPC struct
+ * optee_msg_arg has reserved space for the number of RPC parameters as
+ * returned by OPTEE_SMC_EXCHANGE_CAPABILITIES.
+ *
+ * When calling these functions normal world has a few responsibilities:
+ * 1. It must be able to handle eventual RPCs
+ * 2. Non-secure interrupts should not be masked
+ * 3. If asynchronous notifications has been negotiated successfully, then
+ *    the interrupt for asynchronous notifications should be unmasked
+ *    during this call.
+ *
+ * Call register usage, OPTEE_SMC_CALL_WITH_ARG and
+ * OPTEE_SMC_CALL_WITH_RPC_ARG:
+ * a0	SMC Function ID, OPTEE_SMC_CALL_WITH_ARG or OPTEE_SMC_CALL_WITH_RPC_ARG
  * a1	Upper 32 bits of a 64-bit physical pointer to a struct optee_msg_arg
  * a2	Lower 32 bits of a 64-bit physical pointer to a struct optee_msg_arg
  * a3	Cache settings, not used if physical pointer is in a predefined shared
  *	memory area else per OPTEE_SMC_SHM_*
+ * a4-6	Not used
+ * a7	Hypervisor Client ID register
+ *
+ * Call register usage, OPTEE_SMC_CALL_WITH_REGD_ARG:
+ * a0	SMC Function ID, OPTEE_SMC_CALL_WITH_REGD_ARG
+ * a1	Upper 32 bits of a 64-bit shared memory cookie
+ * a2	Lower 32 bits of a 64-bit shared memory cookie
+ * a3	Offset of the struct optee_msg_arg in the shared memory with the
+ *	supplied cookie
  * a4-6	Not used
  * a7	Hypervisor Client ID register
  *
@@ -174,6 +199,10 @@
 #define OPTEE_SMC_FUNCID_CALL_WITH_ARG OPTEE_MSG_FUNCID_CALL_WITH_ARG
 #define OPTEE_SMC_CALL_WITH_ARG \
 	OPTEE_SMC_STD_CALL_VAL(OPTEE_SMC_FUNCID_CALL_WITH_ARG)
+#define OPTEE_SMC_CALL_WITH_RPC_ARG \
+	OPTEE_SMC_STD_CALL_VAL(OPTEE_SMC_FUNCID_CALL_WITH_RPC_ARG)
+#define OPTEE_SMC_CALL_WITH_REGD_ARG \
+	OPTEE_SMC_STD_CALL_VAL(OPTEE_SMC_FUNCID_CALL_WITH_REGD_ARG)
 
 /*
  * Get Shared Memory Config
@@ -236,11 +265,11 @@
  *	OPTEE_SMC_RETURN_EBADCMD	Unsupported value in a1
  * a1-7	Preserved
  */
-#define OPTEE_SMC_L2CC_MUTEX_GET_ADDR	0
-#define OPTEE_SMC_L2CC_MUTEX_SET_ADDR	1
-#define OPTEE_SMC_L2CC_MUTEX_ENABLE	2
-#define OPTEE_SMC_L2CC_MUTEX_DISABLE	3
-#define OPTEE_SMC_FUNCID_L2CC_MUTEX	8
+#define OPTEE_SMC_L2CC_MUTEX_GET_ADDR	U(0)
+#define OPTEE_SMC_L2CC_MUTEX_SET_ADDR	U(1)
+#define OPTEE_SMC_L2CC_MUTEX_ENABLE	U(2)
+#define OPTEE_SMC_L2CC_MUTEX_DISABLE	U(3)
+#define OPTEE_SMC_FUNCID_L2CC_MUTEX	U(8)
 #define OPTEE_SMC_L2CC_MUTEX \
 	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_L2CC_MUTEX)
 
@@ -256,7 +285,12 @@
  * Normal return register usage:
  * a0	OPTEE_SMC_RETURN_OK
  * a1	bitfield of secure world capabilities OPTEE_SMC_SEC_CAP_*
- * a2-7	Preserved
+ * a2	The maximum secure world notification number
+ * a3	Bit[7:0]: Number of parameters needed for RPC to be supplied
+ *		  as the second MSG arg struct for
+ *		  OPTEE_SMC_CALL_WITH_ARG
+ *	Bit[31:8]: Reserved (MBZ)
+ * a3-7	Preserved
  *
  * Error return register usage:
  * a0	OPTEE_SMC_RETURN_ENOTAVAIL, can't use the capabilities from normal world
@@ -264,21 +298,26 @@
  * a2-7 Preserved
  */
 /* Normal world works as a uniprocessor system */
-#define OPTEE_SMC_NSEC_CAP_UNIPROCESSOR		(1 << 0)
+#define OPTEE_SMC_NSEC_CAP_UNIPROCESSOR		BIT(0)
 /* Secure world has reserved shared memory for normal world to use */
-#define OPTEE_SMC_SEC_CAP_HAVE_RESERVED_SHM	(1 << 0)
+#define OPTEE_SMC_SEC_CAP_HAVE_RESERVED_SHM	BIT(0)
 /* Secure world can communicate via previously unregistered shared memory */
-#define OPTEE_SMC_SEC_CAP_UNREGISTERED_SHM	(1 << 1)
-/* Secure world is built with virtualization support */
-#define OPTEE_SMC_SEC_CAP_VIRTUALIZATION	(1 << 2)
-
+#define OPTEE_SMC_SEC_CAP_UNREGISTERED_SHM	BIT(1)
 /*
  * Secure world supports commands "register/unregister shared memory",
  * secure world accepts command buffers located in any parts of non-secure RAM
  */
-#define OPTEE_SMC_SEC_CAP_DYNAMIC_SHM		(1 << 2)
+#define OPTEE_SMC_SEC_CAP_DYNAMIC_SHM		BIT(2)
+/* Secure world is built with virtualization support */
+#define OPTEE_SMC_SEC_CAP_VIRTUALIZATION	BIT(3)
+/* Secure world supports Shared Memory with a NULL reference */
+#define OPTEE_SMC_SEC_CAP_MEMREF_NULL		BIT(4)
+/* Secure world supports asynchronous notification of normal world */
+#define OPTEE_SMC_SEC_CAP_ASYNC_NOTIF		BIT(5)
+/* Secure world supports pre-allocating RPC arg struct */
+#define OPTEE_SMC_SEC_CAP_RPC_ARG		BIT(6)
 
-#define OPTEE_SMC_FUNCID_EXCHANGE_CAPABILITIES	9
+#define OPTEE_SMC_FUNCID_EXCHANGE_CAPABILITIES	U(9)
 #define OPTEE_SMC_EXCHANGE_CAPABILITIES \
 	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_EXCHANGE_CAPABILITIES)
 
@@ -310,7 +349,7 @@
  * a0	OPTEE_SMC_RETURN_EBUSY
  * a1-7	Preserved
  */
-#define OPTEE_SMC_FUNCID_DISABLE_SHM_CACHE	10
+#define OPTEE_SMC_FUNCID_DISABLE_SHM_CACHE	U(10)
 #define OPTEE_SMC_DISABLE_SHM_CACHE \
 	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_DISABLE_SHM_CACHE)
 
@@ -335,7 +374,7 @@
  * a0	OPTEE_SMC_RETURN_EBUSY
  * a1-7	Preserved
  */
-#define OPTEE_SMC_FUNCID_ENABLE_SHM_CACHE	11
+#define OPTEE_SMC_FUNCID_ENABLE_SHM_CACHE	U(11)
 #define OPTEE_SMC_ENABLE_SHM_CACHE \
 	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_ENABLE_SHM_CACHE)
 
@@ -368,7 +407,7 @@
  * a0	OPTEE_SMC_RETURN_EBUSY
  * a1-7	Preserved
  */
-#define OPTEE_SMC_FUNCID_BOOT_SECONDARY  12
+#define OPTEE_SMC_FUNCID_BOOT_SECONDARY  U(12)
 #define OPTEE_SMC_BOOT_SECONDARY \
 	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_BOOT_SECONDARY)
 
@@ -397,7 +436,7 @@
  * a1-7	Preserved
  *
  */
-#define OPTEE_SMC_FUNCID_VM_CREATED	13
+#define OPTEE_SMC_FUNCID_VM_CREATED	U(13)
 #define OPTEE_SMC_VM_CREATED \
 	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_VM_CREATED)
 
@@ -420,7 +459,7 @@
  * a1-7	Preserved
  *
  */
-#define OPTEE_SMC_FUNCID_VM_DESTROYED	14
+#define OPTEE_SMC_FUNCID_VM_DESTROYED	U(14)
 #define OPTEE_SMC_VM_DESTROYED \
 	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_VM_DESTROYED)
 
@@ -445,9 +484,80 @@
  * a0	OPTEE_SMC_RETURN_UNKNOWN_FUNCTION   Requested call is not implemented
  * a1-7	Preserved
  */
-#define OPTEE_SMC_FUNCID_GET_THREAD_COUNT	15
+#define OPTEE_SMC_FUNCID_GET_THREAD_COUNT	U(15)
 #define OPTEE_SMC_GET_THREAD_COUNT \
 	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_GET_THREAD_COUNT)
+
+/*
+ * Inform OP-TEE that normal world is able to receive asynchronous
+ * notifications.
+ *
+ * Call requests usage:
+ * a0	SMC Function ID, OPTEE_SMC_ENABLE_ASYNC_NOTIF
+ * a1-6	Not used
+ * a7	Hypervisor Client ID register
+ *
+ * Normal return register usage:
+ * a0	OPTEE_SMC_RETURN_OK
+ * a1-7	Preserved
+ *
+ * Not supported return register usage:
+ * a0	OPTEE_SMC_RETURN_ENOTAVAIL
+ * a1-7	Preserved
+ */
+#define OPTEE_SMC_FUNCID_ENABLE_ASYNC_NOTIF	16
+#define OPTEE_SMC_ENABLE_ASYNC_NOTIF \
+	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_ENABLE_ASYNC_NOTIF)
+
+/*
+ * Retrieve a value of notifications pending since the last call of this
+ * function.
+ *
+ * OP-TEE keeps a record of all posted values. When an interrupt is
+ * received which indicates that there are posted values this function
+ * should be called until all pended values have been retrieved. When a
+ * value is retrieved, it's cleared from the record in secure world.
+ *
+ * It is expected that this function is called from an interrupt handler
+ * in normal world.
+ *
+ * Call requests usage:
+ * a0	SMC Function ID, OPTEE_SMC_GET_ASYNC_NOTIF_VALUE
+ * a1-6	Not used
+ * a7	Hypervisor Client ID register
+ *
+ * Normal return register usage:
+ * a0	OPTEE_SMC_RETURN_OK
+ * a1	value
+ * a2	Bit[0]: OPTEE_SMC_ASYNC_NOTIF_VALUE_VALID if the value in a1 is
+ *		valid, else 0 if no values where pending
+ * a2	Bit[1]: OPTEE_SMC_ASYNC_NOTIF_VALUE_PENDING if another value is
+ *		pending, else 0.
+ *	Bit[31:2]: MBZ
+ * a3-7	Preserved
+ *
+ * Not supported return register usage:
+ * a0	OPTEE_SMC_RETURN_ENOTAVAIL
+ * a1-7	Preserved
+ */
+#define OPTEE_SMC_ASYNC_NOTIF_VALID	BIT(0)
+#define OPTEE_SMC_ASYNC_NOTIF_PENDING	BIT(1)
+
+/*
+ * Notification that OP-TEE expects a yielding call to do some bottom half
+ * work in a driver.
+ */
+#define OPTEE_SMC_ASYNC_NOTIF_VALUE_DO_BOTTOM_HALF	0
+
+#define OPTEE_SMC_FUNCID_GET_ASYNC_NOTIF_VALUE	17
+#define OPTEE_SMC_GET_ASYNC_NOTIF_VALUE \
+	OPTEE_SMC_FAST_CALL_VAL(OPTEE_SMC_FUNCID_GET_ASYNC_NOTIF_VALUE)
+
+/* See OPTEE_SMC_CALL_WITH_RPC_ARG above */
+#define OPTEE_SMC_FUNCID_CALL_WITH_RPC_ARG	U(18)
+
+/* See OPTEE_SMC_CALL_WITH_REGD_ARG above */
+#define OPTEE_SMC_FUNCID_CALL_WITH_REGD_ARG	U(19)
 
 /*
  * Resume from RPC (for example after processing a foreign interrupt)
@@ -470,13 +580,13 @@
  * OPTEE_SMC_RETURN_ERESUME		Resume failed, the opaque resume
  *					information was corrupt.
  */
-#define OPTEE_SMC_FUNCID_RETURN_FROM_RPC	3
+#define OPTEE_SMC_FUNCID_RETURN_FROM_RPC	U(3)
 #define OPTEE_SMC_CALL_RETURN_FROM_RPC \
 	OPTEE_SMC_STD_CALL_VAL(OPTEE_SMC_FUNCID_RETURN_FROM_RPC)
 
-#define OPTEE_SMC_RETURN_RPC_PREFIX_MASK	0xFFFF0000
-#define OPTEE_SMC_RETURN_RPC_PREFIX		0xFFFF0000
-#define OPTEE_SMC_RETURN_RPC_FUNC_MASK		0x0000FFFF
+#define OPTEE_SMC_RETURN_RPC_PREFIX_MASK	U(0xFFFF0000)
+#define OPTEE_SMC_RETURN_RPC_PREFIX		U(0xFFFF0000)
+#define OPTEE_SMC_RETURN_RPC_FUNC_MASK		U(0x0000FFFF)
 
 #define OPTEE_SMC_RETURN_GET_RPC_FUNC(ret) \
 	((ret) & OPTEE_SMC_RETURN_RPC_FUNC_MASK)
@@ -510,7 +620,7 @@
  *	the memory or doing an RPC
  * a6-7	Preserved
  */
-#define OPTEE_SMC_RPC_FUNC_ALLOC	0
+#define OPTEE_SMC_RPC_FUNC_ALLOC	U(0)
 #define OPTEE_SMC_RETURN_RPC_ALLOC \
 	OPTEE_SMC_RPC_VAL(OPTEE_SMC_RPC_FUNC_ALLOC)
 
@@ -530,7 +640,7 @@
  * a1-2	Not used
  * a3-7	Preserved
  */
-#define OPTEE_SMC_RPC_FUNC_FREE		2
+#define OPTEE_SMC_RPC_FUNC_FREE		U(2)
 #define OPTEE_SMC_RETURN_RPC_FREE \
 	OPTEE_SMC_RPC_VAL(OPTEE_SMC_RPC_FUNC_FREE)
 
@@ -545,7 +655,7 @@
  * a0	SMC Function ID, OPTEE_SMC_CALL_RETURN_FROM_RPC.
  * a1-7	Preserved
  */
-#define OPTEE_SMC_RPC_FUNC_FOREIGN_INTR	4
+#define OPTEE_SMC_RPC_FUNC_FOREIGN_INTR	U(4)
 #define OPTEE_SMC_RETURN_RPC_FOREIGN_INTR \
 	OPTEE_SMC_RPC_VAL(OPTEE_SMC_RPC_FUNC_FOREIGN_INTR)
 
@@ -574,22 +684,22 @@
  * a1-2	Not used
  * a3-7	Preserved
  */
-#define OPTEE_SMC_RPC_FUNC_CMD		5
+#define OPTEE_SMC_RPC_FUNC_CMD		U(5)
 #define OPTEE_SMC_RETURN_RPC_CMD \
 	OPTEE_SMC_RPC_VAL(OPTEE_SMC_RPC_FUNC_CMD)
 
 /* Returned in a0 */
-#define OPTEE_SMC_RETURN_UNKNOWN_FUNCTION 0xFFFFFFFF
+#define OPTEE_SMC_RETURN_UNKNOWN_FUNCTION U(0xFFFFFFFF)
 
 /* Returned in a0 only from Trusted OS functions */
-#define OPTEE_SMC_RETURN_OK		0x0
-#define OPTEE_SMC_RETURN_ETHREAD_LIMIT	0x1
-#define OPTEE_SMC_RETURN_EBUSY		0x2
-#define OPTEE_SMC_RETURN_ERESUME	0x3
-#define OPTEE_SMC_RETURN_EBADADDR	0x4
-#define OPTEE_SMC_RETURN_EBADCMD	0x5
-#define OPTEE_SMC_RETURN_ENOMEM		0x6
-#define OPTEE_SMC_RETURN_ENOTAVAIL	0x7
+#define OPTEE_SMC_RETURN_OK		U(0x0)
+#define OPTEE_SMC_RETURN_ETHREAD_LIMIT	U(0x1)
+#define OPTEE_SMC_RETURN_EBUSY		U(0x2)
+#define OPTEE_SMC_RETURN_ERESUME	U(0x3)
+#define OPTEE_SMC_RETURN_EBADADDR	U(0x4)
+#define OPTEE_SMC_RETURN_EBADCMD	U(0x5)
+#define OPTEE_SMC_RETURN_ENOMEM		U(0x6)
+#define OPTEE_SMC_RETURN_ENOTAVAIL	U(0x7)
 #define OPTEE_SMC_RETURN_IS_RPC(ret) \
 	(((ret) != OPTEE_SMC_RETURN_UNKNOWN_FUNCTION) && \
 	((((ret) & OPTEE_SMC_RETURN_RPC_PREFIX_MASK) == \

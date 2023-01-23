@@ -1,1 +1,2 @@
-srcs-y += pk_get_oid.c
+srcs-y += pk_oid_cmp.c
+srcs-y += pk_oid_str.c

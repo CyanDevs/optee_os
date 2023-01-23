@@ -33,10 +33,9 @@
 #include <drivers/cdns_uart.h>
 #include <drivers/gic.h>
 #include <io.h>
-#include <kernel/generic_boot.h>
+#include <kernel/boot.h>
 #include <kernel/misc.h>
 #include <kernel/panic.h>
-#include <kernel/pm_stubs.h>
 #include <kernel/tz_ssvce_pl310.h>
 #include <mm/core_mmu.h>
 #include <mm/core_memprot.h>
@@ -44,22 +43,6 @@
 #include <platform_smc.h>
 #include <stdint.h>
 #include <tee/entry_fast.h>
-#include <tee/entry_std.h>
-
-static void main_fiq(void);
-static void platform_tee_entry_fast(struct thread_smc_args *args);
-
-static const struct thread_handlers handlers = {
-	.std_smc = tee_entry_std,
-	.fast_smc = platform_tee_entry_fast,
-	.nintr = main_fiq,
-	.cpu_on = pm_panic,
-	.cpu_off = pm_panic,
-	.cpu_suspend = pm_panic,
-	.cpu_resume = pm_panic,
-	.system_off = pm_panic,
-	.system_reset = pm_panic,
-};
 
 static struct gic_data gic_data;
 static struct cdns_uart_data console_data;
@@ -70,53 +53,41 @@ register_phys_mem_pgdir(MEM_AREA_IO_SEC, GIC_BASE, CORE_MMU_PGDIR_SIZE);
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, PL310_BASE, CORE_MMU_PGDIR_SIZE);
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, SLCR_BASE, CORE_MMU_PGDIR_SIZE);
 
-const struct thread_handlers *generic_boot_get_handlers(void)
+void plat_primary_init_early(void)
 {
-	return &handlers;
-}
-
-static void main_fiq(void)
-{
-	panic();
-}
-
-void plat_cpu_reset_late(void)
-{
-	if (!get_core_pos()) {
-		/* primary core */
+	/* primary core */
 #if defined(CFG_BOOT_SECONDARY_REQUEST)
-		/* set secondary entry address and release core */
-		io_write32(SECONDARY_ENTRY_DROP, TEE_LOAD_ADDR);
-		dsb();
-		sev();
+	/* set secondary entry address and release core */
+	io_write32(SECONDARY_ENTRY_DROP, TEE_LOAD_ADDR);
+	dsb();
+	sev();
 #endif
 
-		/* SCU config */
-		io_write32(SCU_BASE + SCU_INV_SEC, SCU_INV_CTRL_INIT);
-		io_write32(SCU_BASE + SCU_SAC, SCU_SAC_CTRL_INIT);
-		io_write32(SCU_BASE + SCU_NSAC, SCU_NSAC_CTRL_INIT);
+	/* SCU config */
+	io_write32(SCU_BASE + SCU_INV_SEC, SCU_INV_CTRL_INIT);
+	io_write32(SCU_BASE + SCU_SAC, SCU_SAC_CTRL_INIT);
+	io_write32(SCU_BASE + SCU_NSAC, SCU_NSAC_CTRL_INIT);
 
-		/* SCU enable */
-		io_setbits32(SCU_BASE + SCU_CTRL, 0x1);
+	/* SCU enable */
+	io_setbits32(SCU_BASE + SCU_CTRL, 0x1);
 
-		/* NS Access control */
-		io_write32(SECURITY2_SDIO0, ACCESS_BITS_ALL);
-		io_write32(SECURITY3_SDIO1, ACCESS_BITS_ALL);
-		io_write32(SECURITY4_QSPI, ACCESS_BITS_ALL);
-		io_write32(SECURITY6_APB_SLAVES, ACCESS_BITS_ALL);
+	/* NS Access control */
+	io_write32(SECURITY2_SDIO0, ACCESS_BITS_ALL);
+	io_write32(SECURITY3_SDIO1, ACCESS_BITS_ALL);
+	io_write32(SECURITY4_QSPI, ACCESS_BITS_ALL);
+	io_write32(SECURITY6_APB_SLAVES, ACCESS_BITS_ALL);
 
-		io_write32(SLCR_UNLOCK_MAGIC, SLCR_UNLOCK);
+	io_write32(SLCR_UNLOCK, SLCR_UNLOCK_MAGIC);
 
-		io_write32(SLCR_TZ_DDR_RAM, ACCESS_BITS_ALL);
-		io_write32(SLCR_TZ_DMA_NS, ACCESS_BITS_ALL);
-		io_write32(SLCR_TZ_DMA_IRQ_NS, ACCESS_BITS_ALL);
-		io_write32(SLCR_TZ_DMA_PERIPH_NS, ACCESS_BITS_ALL);
-		io_write32(SLCR_TZ_GEM, ACCESS_BITS_ALL);
-		io_write32(SLCR_TZ_SDIO, ACCESS_BITS_ALL);
-		io_write32(SLCR_TZ_USB, ACCESS_BITS_ALL);
+	io_write32(SLCR_TZ_DDR_RAM, ACCESS_BITS_ALL);
+	io_write32(SLCR_TZ_DMA_NS, ACCESS_BITS_ALL);
+	io_write32(SLCR_TZ_DMA_IRQ_NS, ACCESS_BITS_ALL);
+	io_write32(SLCR_TZ_DMA_PERIPH_NS, ACCESS_BITS_ALL);
+	io_write32(SLCR_TZ_GEM, ACCESS_BITS_ALL);
+	io_write32(SLCR_TZ_SDIO, ACCESS_BITS_ALL);
+	io_write32(SLCR_TZ_USB, ACCESS_BITS_ALL);
 
-		io_write32(SLCR_LOCK, SLCR_LOCK_MAGIC);
-	}
+	io_write32(SLCR_LOCK, SLCR_LOCK_MAGIC);
 }
 
 void console_init(void)
@@ -131,7 +102,7 @@ vaddr_t pl310_base(void)
 
 	if (cpu_mmu_enabled()) {
 		if (!va)
-			va = phys_to_virt(PL310_BASE, MEM_AREA_IO_SEC);
+			va = phys_to_virt(PL310_BASE, MEM_AREA_IO_SEC, 1);
 		return (vaddr_t)va;
 	}
 	return PL310_BASE;
@@ -173,19 +144,7 @@ void arm_cl2_enable(vaddr_t pl310_base)
 
 void main_init_gic(void)
 {
-	vaddr_t gicc_base;
-	vaddr_t gicd_base;
-
-	gicc_base = (vaddr_t)phys_to_virt(GIC_BASE + GICC_OFFSET,
-					  MEM_AREA_IO_SEC);
-	gicd_base = (vaddr_t)phys_to_virt(GIC_BASE + GICD_OFFSET,
-					  MEM_AREA_IO_SEC);
-
-	if (!gicc_base || !gicd_base)
-		panic();
-
-	/* Initialize GIC */
-	gic_init(&gic_data, gicc_base, gicd_base);
+	gic_init(&gic_data, GIC_BASE + GICC_OFFSET, GIC_BASE + GICD_OFFSET);
 	itr_init(&gic_data.chip);
 }
 
@@ -212,7 +171,9 @@ static uint32_t write_slcr(uint32_t addr, uint32_t val)
 
 			if (!va)
 				va = (vaddr_t)phys_to_virt(SLCR_BASE,
-							   MEM_AREA_IO_SEC);
+							   MEM_AREA_IO_SEC,
+							   addr +
+							   sizeof(uint32_t));
 			io_write32(va + addr, val);
 			return OPTEE_SMC_RETURN_OK;
 		}
@@ -231,7 +192,9 @@ static uint32_t read_slcr(uint32_t addr, uint32_t *val)
 
 			if (!va)
 				va = (vaddr_t)phys_to_virt(SLCR_BASE,
-							   MEM_AREA_IO_SEC);
+							   MEM_AREA_IO_SEC,
+							   addr +
+							   sizeof(uint32_t));
 			*val = io_read32(va + addr);
 			return OPTEE_SMC_RETURN_OK;
 		}
@@ -239,7 +202,8 @@ static uint32_t read_slcr(uint32_t addr, uint32_t *val)
 	return OPTEE_SMC_RETURN_EBADADDR;
 }
 
-static void platform_tee_entry_fast(struct thread_smc_args *args)
+/* Overriding the default __weak tee_entry_fast() */
+void tee_entry_fast(struct thread_smc_args *args)
 {
 	switch (args->a0) {
 	case ZYNQ7K_SMC_SLCR_WRITE:
@@ -249,7 +213,7 @@ static void platform_tee_entry_fast(struct thread_smc_args *args)
 		args->a0 = read_slcr(args->a1, &args->a2);
 		break;
 	default:
-		tee_entry_fast(args);
+		__tee_entry_fast(args);
 		break;
 	}
 }

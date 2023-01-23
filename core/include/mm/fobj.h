@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * Copyright (c) 2019, Linaro Limited
+ * Copyright (c) 2019-2021, Linaro Limited
  */
 
 #ifndef __MM_FOBJ_H
@@ -24,16 +24,18 @@ struct fobj {
 	unsigned int num_pages;
 	struct refcount refc;
 #ifdef CFG_WITH_PAGER
-	struct tee_pager_area_head areas;
+	struct vm_paged_region_head regions;
 #endif
 };
 
 /*
  * struct fobj_ops - operations struct for struct fobj
- * @free:	Frees the @fobj
- * @load_page:	Loads page with index @page_idx at address @va
- * @save_page:	Saves page with index @page_idx from address @va
- * @get_pa:	Returns physical address of page at @page_idx if not paged
+ * @free:	  Frees the @fobj
+ * @load_page:	  Loads page with index @page_idx at address @va
+ * @save_page:	  Saves page with index @page_idx from address @va
+ * @get_iv_vaddr: Returns virtual address of tag and IV for the page at
+ *		  @page_idx if tag and IV are paged for this fobj
+ * @get_pa:	  Returns physical address of page at @page_idx if not paged
  */
 struct fobj_ops {
 	void (*free)(struct fobj *fobj);
@@ -42,6 +44,7 @@ struct fobj_ops {
 				void *va);
 	TEE_Result (*save_page)(struct fobj *fobj, unsigned int page_idx,
 				const void *va);
+	vaddr_t (*get_iv_vaddr)(struct fobj *fobj, unsigned int page_idx);
 #endif
 	paddr_t (*get_pa)(struct fobj *fobj, unsigned int page_idx);
 };
@@ -85,6 +88,27 @@ struct fobj *fobj_ro_paged_alloc(unsigned int num_pages, void *hashes,
 				 void *store);
 
 /*
+ * fobj_ro_reloc_paged_alloc() - Allocate initialized read-only storage with
+ *				 relocation
+ * @num_pages:	Number of pages covered
+ * @hashes:	Hashes to verify the pages
+ * @reloc_offs:	Offset from the base address in the relocations in @reloc
+ * @reloc:	Relocation data
+ * @reloc_len:	Length of relocation data
+ * @store:	Clear text data for all pages
+ *
+ * This object is like fobj_ro_paged_alloc() above, but in addition the
+ * relocation information is applied to a populated page. This makes sure
+ * the offset to which all pages are relocated doesn't leak out to storage.
+ *
+ * Returns a valid pointer on success or NULL on failure.
+ */
+struct fobj *fobj_ro_reloc_paged_alloc(unsigned int num_pages, void *hashes,
+				       unsigned int reloc_offs,
+				       const void *reloc,
+				       unsigned int reloc_len, void *store);
+
+/*
  * fobj_load_page() - Load a page into memory
  * @fobj:	Fobj pointer
  * @page_index:	Index of page in @fobj
@@ -116,6 +140,15 @@ static inline TEE_Result fobj_save_page(struct fobj *fobj,
 		return fobj->ops->save_page(fobj, page_idx, va);
 
 	return TEE_ERROR_GENERIC;
+}
+
+static inline vaddr_t fobj_get_iv_vaddr(struct fobj *fobj,
+					unsigned int page_idx)
+{
+	if (fobj && fobj->ops->get_iv_vaddr)
+		return fobj->ops->get_iv_vaddr(fobj, page_idx);
+
+	return 0;
 }
 #endif
 
@@ -169,19 +202,5 @@ static inline void fobj_put(struct fobj *fobj)
 	if (fobj && refcount_dec(&fobj->refc))
 		fobj->ops->free(fobj);
 }
-
-#ifdef CFG_WITH_PAGER
-/*
- * fobj_generate_authenc_key() - Generate authentication key
- *
- * Generates the authentication key used in all fobjs allocated with
- * fobj_rw_paged_alloc().
- */
-void fobj_generate_authenc_key(void);
-#else
-static inline void fobj_generate_authenc_key(void)
-{
-}
-#endif
 
 #endif /*__MM_FOBJ_H*/

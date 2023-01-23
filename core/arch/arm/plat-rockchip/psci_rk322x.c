@@ -1,29 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause
 /*
  * Copyright (C) 2017, Fuzhou Rockchip Electronics Co., Ltd.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- * this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- * this list of conditions and the following disclaimer in the documentation
- * and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include <common.h>
@@ -33,7 +10,7 @@
 #include <initcall.h>
 #include <io.h>
 #include <kernel/delay.h>
-#include <kernel/generic_boot.h>
+#include <kernel/boot.h>
 #include <kernel/misc.h>
 #include <kernel/panic.h>
 #include <mm/core_mmu.h>
@@ -55,6 +32,10 @@ struct dram_data {
 };
 
 static struct dram_data dram_d;
+
+register_phys_mem_pgdir(MEM_AREA_IO_SEC, CRU_BASE, CRU_SIZE);
+register_phys_mem_pgdir(MEM_AREA_IO_SEC, GRF_BASE, GRF_SIZE);
+register_phys_mem_pgdir(MEM_AREA_IO_NSEC, ISRAM_BASE, ISRAM_SIZE);
 
 static const uint32_t clks_gating_table[CRU_CLKGATE_CON_CNT] = {
 	/* gate: 0-3 */
@@ -82,7 +63,7 @@ static const uint32_t clks_gating_table[CRU_CLKGATE_CON_CNT] = {
 static void clks_disable(void)
 {
 	uint32_t i;
-	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE);
+	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE, CRU_SIZE);
 
 	for (i = 0; i < CRU_CLKGATE_CON_CNT; i++) {
 		dram_d.cru_clkgate[i] = io_read32(va_base + CRU_CLKGATE_CON(i));
@@ -94,7 +75,7 @@ static void clks_disable(void)
 static void clks_restore(void)
 {
 	uint32_t i;
-	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE);
+	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE, CRU_SIZE);
 
 	for (i = 0; i < CRU_CLKGATE_CON_CNT; i++)
 		io_write32(va_base + CRU_CLKGATE_CON(i),
@@ -103,7 +84,7 @@ static void clks_restore(void)
 
 static void pll_power_down(uint32_t pll)
 {
-	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE);
+	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE, CRU_SIZE);
 
 	io_write32(va_base + CRU_MODE_CON, PLL_SLOW_MODE(pll));
 	io_write32(va_base + CRU_PLL_CON1(pll), PLL_POWER_DOWN);
@@ -111,7 +92,7 @@ static void pll_power_down(uint32_t pll)
 
 static void pll_power_up(uint32_t pll)
 {
-	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE);
+	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE, CRU_SIZE);
 
 	io_write32(va_base + CRU_PLL_CON1(pll), PLL_POWER_UP);
 }
@@ -119,7 +100,7 @@ static void pll_power_up(uint32_t pll)
 static void pll_wait_lock(uint32_t pll)
 {
 	uint32_t loop = 0;
-	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE);
+	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE, CRU_SIZE);
 
 	while (!(io_read32(va_base + CRU_PLL_CON1(pll)) & PLL_LOCK) &&
 	       (loop < 500)) {
@@ -139,7 +120,7 @@ static void pll_wait_lock(uint32_t pll)
  */
 static void plls_power_down(void)
 {
-	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE);
+	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE, CRU_SIZE);
 
 	dram_d.cru_clksel0 = io_read32(va_base + CRU_CLKSEL_CON(0));
 	dram_d.cru_clksel1 = io_read32(va_base + CRU_CLKSEL_CON(1));
@@ -174,7 +155,7 @@ static void plls_power_down(void)
 
 static void plls_restore(void)
 {
-	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE);
+	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE, CRU_SIZE);
 
 	/* power up plls */
 	pll_power_up(APLL_ID);
@@ -222,7 +203,7 @@ static void plls_restore(void)
 static bool wait_core_wfe_i(uint32_t core)
 {
 	uint32_t wfei_mask, loop = 0;
-	vaddr_t va_base = (vaddr_t)phys_to_virt_io(GRF_BASE);
+	vaddr_t va_base = (vaddr_t)phys_to_virt_io(GRF_BASE, GRF_SIZE);
 
 	wfei_mask = CORE_WFE_I_MASK(core);
 	while (!(io_read32(va_base + GRF_CPU_STATUS1) & wfei_mask) &&
@@ -237,7 +218,7 @@ static bool wait_core_wfe_i(uint32_t core)
 static bool core_held_in_reset(uint32_t core)
 {
 	uint32_t val;
-	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE);
+	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE, CRU_SIZE);
 
 	val = io_read32(va_base + CRU_SOFTRST_CON(0));
 
@@ -268,8 +249,8 @@ int psci_cpu_on(uint32_t core_idx, uint32_t entry,
 		uint32_t context_id)
 {
 	bool wfei;
-	vaddr_t cru_base = (vaddr_t)phys_to_virt_io(CRU_BASE);
-	vaddr_t isram_base = (vaddr_t)phys_to_virt_io(ISRAM_BASE);
+	vaddr_t cru_base = (vaddr_t)phys_to_virt_io(CRU_BASE, CRU_SIZE);
+	vaddr_t isram_base = (vaddr_t)phys_to_virt_io(ISRAM_BASE, ISRAM_SIZE);
 
 	core_idx &= MPIDR_CPU_MASK;
 	if ((core_idx == 0) || (core_idx >= CFG_TEE_CORE_NB_CORE))
@@ -278,7 +259,7 @@ int psci_cpu_on(uint32_t core_idx, uint32_t entry,
 	DMSG("core_id: %" PRIu32, core_idx);
 
 	/* set secondary cores' NS entry addresses */
-	generic_boot_set_core_ns_entry(core_idx, entry, context_id);
+	boot_set_core_ns_entry(core_idx, entry, context_id);
 
 	/* wait */
 	if (!core_held_in_reset(core_idx)) {
@@ -341,7 +322,7 @@ int psci_affinity_info(uint32_t affinity,
 {
 	uint32_t core_idx = affinity & MPIDR_CPU_MASK;
 	uint32_t wfi_mask = CORE_WFI_MASK(core_idx);
-	vaddr_t va_base = (vaddr_t)phys_to_virt_io(GRF_BASE);
+	vaddr_t va_base = (vaddr_t)phys_to_virt_io(GRF_BASE, GRF_SIZE);
 
 	DMSG("core_id: %" PRIu32 " STATUS: %" PRIx32 " MASK: %" PRIx32,
 	     core_idx, io_read32(va_base + GRF_CPU_STATUS1), wfi_mask);
@@ -352,7 +333,7 @@ int psci_affinity_info(uint32_t affinity,
 
 void psci_system_reset(void)
 {
-	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE);
+	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE, CRU_SIZE);
 
 	/* PLLs enter slow mode */
 	io_write32(va_base + CRU_MODE_CON, PLLS_SLOW_MODE);
@@ -385,7 +366,7 @@ int psci_system_suspend(uintptr_t entry __unused,
 /* When SMP bootup, we release cores one by one */
 static TEE_Result reset_nonboot_cores(void)
 {
-	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE);
+	vaddr_t va_base = (vaddr_t)phys_to_virt_io(CRU_BASE, CRU_SIZE);
 
 	io_write32(va_base + CRU_SOFTRST_CON(0), NONBOOT_CORES_SOFT_RESET);
 

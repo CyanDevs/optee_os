@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * Copyright (c) 2014, STMicroelectronics International N.V.
+ * Copyright (c) 2022, Linaro Limited
  */
 
 /* Based on GP TEE Internal Core API Specification Version 1.1 */
@@ -8,7 +9,93 @@
 #ifndef TEE_API_DEFINES_H
 #define TEE_API_DEFINES_H
 
-#define TEE_INT_CORE_API_SPEC_VERSION     0x0000000A
+#define TEE_CORE_API_MAJOR_VERSION		1U
+#define TEE_CORE_API_MINOR_VERSION		1U
+#define TEE_CORE_API_MAINTENANCE_VERSION	0U
+#define TEE_CORE_API_VERSION \
+			((TEE_CORE_API_MAJOR_VERSION << 24) | \
+			 (TEE_CORE_API_MINOR_VERSION << 16) | \
+			 (TEE_CORE_API_MAINTENANCE_VERSION << 8))
+#define TEE_CORE_API_1_1
+
+/*
+ * The things that follows below to select compatibility version 1.1 doesn't
+ * do much useful at the moment since OP-TEE is already compatible with that
+ * version by default. However, that will change when a newer version of
+ * this API is provided.
+ *
+ * Below follows the GP defined way of letting a TA define that it wants an
+ * API compatible with version 1.1 or the latest. An alternative approach
+ * is to set __OPTEE_CORE_API_COMPAT_1_1, but that's an OP-TEE extension.
+ *
+ * The GP specs (>= 1.2) requires that only APIs defined in the indicated
+ * version SHALL be made available when using this mechanism. However, that
+ * is far beyond what ordinary standards requires as they permit
+ * extensions. With this, in OP-TEE, extensions and new API that doesn't
+ * interfere with the selected version of the standard will be permitted.
+ */
+#if defined(TEE_CORE_API_REQUIRED_MAINTENANCE_VERSION) && \
+	!defined(TEE_CORE_API_REQUIRED_MINOR_VERSION)
+#error "Required TEE_CORE_API_REQUIRED_MINOR_VERSION undefined"
+#endif
+#if defined(TEE_CORE_API_REQUIRED_MINOR_VERSION) && \
+	!defined(TEE_CORE_API_REQUIRED_MAJOR_VERSION)
+#error "Required TEE_CORE_API_REQUIRED_MAJOR_VERSION undefined"
+#endif
+
+#if defined(TEE_CORE_API_REQUIRED_MAJOR_VERSION)
+#if TEE_CORE_API_REQUIRED_MAJOR_VERSION != 1 && \
+	TEE_CORE_API_REQUIRED_MAJOR_VERSION != 0
+#error "Required major version not supported"
+#endif
+#ifdef TEE_CORE_API_REQUIRED_MINOR_VERSION
+#if TEE_CORE_API_REQUIRED_MINOR_VERSION == 1
+#define __OPTEE_CORE_API_COMPAT_1_1 1
+#else
+#error "Required minor version not supported"
+#endif
+#if defined(TEE_CORE_API_REQUIRED_MAINTENANCE_VERSION) && \
+	TEE_CORE_API_REQUIRED_MAINTENANCE_VERSION != 0
+#error "Required maintenance version not supported"
+#endif
+#endif
+#endif
+
+/*
+ * For backwards compatibility with v1.1 as provided by up to OP-TEE
+ * version 3.19.0, define __OPTEE_CORE_API_COMPAT_1_1 to 1.
+ *
+ * Some versions of the GP specs have introduced backwards incompatible
+ * changes. For example the v1.0:
+ *
+ * TEE_Result TEE_DigestDoFinal(TEE_OperationHandle operation,
+ *				const void *chunk, uint32_t chunkLen,
+ *				void *hash, uint32_t *hashLen);
+ *
+ * Was changed in v1.1.1 to this:
+ *
+ * TEE_Result TEE_DigestDoFinal(TEE_OperationHandle operation,
+ *				 const void *chunk, size_t chunkLen,
+ *				 void *hash, size_t *hashLen);
+ *
+ * Note the type change for "hashLen", a source of problem especially on
+ * platforms where size_t is a 64-bit unsigned integer.
+ *
+ * As a way of allowing older TAs to be compiled with a newer version of
+ * the API we can turn off or hide different incompatible changes. New
+ * features which are not interfering with older versions of the API are
+ * not disabled. So by enabling __OPTEE_CORE_API_COMPAT_1_1 will not result
+ * in pure 1.1 API, it will be a hybrid API that should work with most TAs
+ * not yet updated to the new API.
+ *
+ * Backwards compatibility is provided by duplicating all functions that
+ * has changed since v1.1. The original function is given a "__GP11_"
+ * prefix and preprocessor macros are used to let a legacy TA use the old
+ * function instead. The same principle applies to defined types.
+ */
+#ifndef __OPTEE_CORE_API_COMPAT_1_1
+#define __OPTEE_CORE_API_COMPAT_1_1	0
+#endif
 
 #define TEE_HANDLE_NULL                   0
 
@@ -20,6 +107,7 @@
 #define TEE_ERROR_CORRUPT_OBJECT_2        0xF0100002
 #define TEE_ERROR_STORAGE_NOT_AVAILABLE   0xF0100003
 #define TEE_ERROR_STORAGE_NOT_AVAILABLE_2 0xF0100004
+#define TEE_ERROR_CIPHERTEXT_INVALID      0xF0100006
 #define TEE_ERROR_GENERIC                 0xFFFF0000
 #define TEE_ERROR_ACCESS_DENIED           0xFFFF0001
 #define TEE_ERROR_CANCEL                  0xFFFF0002
@@ -112,7 +200,6 @@
 #define TEE_OPERATION_ASYMMETRIC_CIPHER    6
 #define TEE_OPERATION_ASYMMETRIC_SIGNATURE 7
 #define TEE_OPERATION_KEY_DERIVATION       8
-#define TEE_OPERATION_EXTENSION		   0xF
 #define TEE_OPERATION_STATE_INITIAL        0x00000000
 #define TEE_OPERATION_STATE_ACTIVE         0x00000001
 
@@ -135,6 +222,9 @@
 #define TEE_ALG_DES3_CBC_NOPAD                  0x10000113
 #define TEE_ALG_DES3_CBC_MAC_NOPAD              0x30000113
 #define TEE_ALG_DES3_CBC_MAC_PKCS5              0x30000513
+#define TEE_ALG_SM4_ECB_NOPAD                   0x10000014
+#define TEE_ALG_SM4_CBC_NOPAD                   0x10000114
+#define TEE_ALG_SM4_CTR                         0x10000214
 #define TEE_ALG_RSASSA_PKCS1_V1_5_MD5           0x70001830
 #define TEE_ALG_RSASSA_PKCS1_V1_5_SHA1          0x70002830
 #define TEE_ALG_RSASSA_PKCS1_V1_5_SHA224        0x70003830
@@ -157,13 +247,19 @@
 #define TEE_ALG_DSA_SHA1                        0x70002131
 #define TEE_ALG_DSA_SHA224                      0x70003131
 #define TEE_ALG_DSA_SHA256                      0x70004131
+#define TEE_ALG_SM2_DSA_SM3                     0x70006045
 #define TEE_ALG_DH_DERIVE_SHARED_SECRET         0x80000032
+#define TEE_ALG_SM2_KEP                         0x60000045
 #define TEE_ALG_MD5                             0x50000001
 #define TEE_ALG_SHA1                            0x50000002
 #define TEE_ALG_SHA224                          0x50000003
 #define TEE_ALG_SHA256                          0x50000004
 #define TEE_ALG_SHA384                          0x50000005
 #define TEE_ALG_SHA512                          0x50000006
+#define TEE_ALG_SHA3_224                        0x50000008
+#define	TEE_ALG_SHA3_256                        0x50000009
+#define	TEE_ALG_SHA3_384                        0x5000000A
+#define	TEE_ALG_SHA3_512                        0x5000000B
 #define TEE_ALG_MD5SHA1                         0x5000000F
 #define TEE_ALG_HMAC_MD5                        0x30000001
 #define TEE_ALG_HMAC_SHA1                       0x30000002
@@ -171,6 +267,7 @@
 #define TEE_ALG_HMAC_SHA256                     0x30000004
 #define TEE_ALG_HMAC_SHA384                     0x30000005
 #define TEE_ALG_HMAC_SHA512                     0x30000006
+#define TEE_ALG_HMAC_SM3                        0x30000007
 /*
  * Fix GP Internal Core API v1.1
  *     "Table 6-12:  Structure of Algorithm Identifier"
@@ -186,23 +283,30 @@
 #define TEE_ALG_ECDSA_P256                      0x70003041
 #define TEE_ALG_ECDSA_P384                      0x70004041
 #define TEE_ALG_ECDSA_P521                      0x70005041
+#define TEE_ALG_ED25519                         0x70006043 /* v1.3.1 spec */
 #define TEE_ALG_ECDH_P192                       0x80001042
 #define TEE_ALG_ECDH_P224                       0x80002042
 #define TEE_ALG_ECDH_P256                       0x80003042
 #define TEE_ALG_ECDH_P384                       0x80004042
 #define TEE_ALG_ECDH_P521                       0x80005042
+#define TEE_ALG_SM2_PKE                         0x80000045
+#define TEE_ALG_SM3                             0x50000007
+#define TEE_ALG_X25519                          0x80000044
+#define TEE_ALG_ILLEGAL_VALUE                   0xEFFFFFFF
 
 /* Object Types */
 
 #define TEE_TYPE_AES                        0xA0000010
 #define TEE_TYPE_DES                        0xA0000011
 #define TEE_TYPE_DES3                       0xA0000013
+#define TEE_TYPE_SM4                        0xA0000014
 #define TEE_TYPE_HMAC_MD5                   0xA0000001
 #define TEE_TYPE_HMAC_SHA1                  0xA0000002
 #define TEE_TYPE_HMAC_SHA224                0xA0000003
 #define TEE_TYPE_HMAC_SHA256                0xA0000004
 #define TEE_TYPE_HMAC_SHA384                0xA0000005
 #define TEE_TYPE_HMAC_SHA512                0xA0000006
+#define TEE_TYPE_HMAC_SM3                   0xA0000007 /* Not in spec */
 #define TEE_TYPE_RSA_PUBLIC_KEY             0xA0000030
 #define TEE_TYPE_RSA_KEYPAIR                0xA1000030
 #define TEE_TYPE_DSA_PUBLIC_KEY             0xA0000031
@@ -212,9 +316,19 @@
 #define TEE_TYPE_ECDSA_KEYPAIR              0xA1000041
 #define TEE_TYPE_ECDH_PUBLIC_KEY            0xA0000042
 #define TEE_TYPE_ECDH_KEYPAIR               0xA1000042
+#define TEE_TYPE_ED25519_PUBLIC_KEY         0xA0000043 /* v1.3.1 spec */
+#define TEE_TYPE_ED25519_KEYPAIR            0xA1000043 /* v1.3.1 spec */
+#define TEE_TYPE_SM2_DSA_PUBLIC_KEY         0xA0000045
+#define TEE_TYPE_SM2_DSA_KEYPAIR            0xA1000045
+#define TEE_TYPE_SM2_KEP_PUBLIC_KEY         0xA0000046
+#define TEE_TYPE_SM2_KEP_KEYPAIR            0xA1000046
+#define TEE_TYPE_SM2_PKE_PUBLIC_KEY         0xA0000047
+#define TEE_TYPE_SM2_PKE_KEYPAIR            0xA1000047
 #define TEE_TYPE_GENERIC_SECRET             0xA0000000
 #define TEE_TYPE_CORRUPTED_OBJECT           0xA00000BE
 #define TEE_TYPE_DATA                       0xA00000BF
+#define TEE_TYPE_X25519_PUBLIC_KEY          0xA0000044
+#define TEE_TYPE_X25519_KEYPAIR             0xA1000044
 
 /* List of Object or Operation Attributes */
 
@@ -244,17 +358,52 @@
 #define TEE_ATTR_ECC_PUBLIC_VALUE_Y         0xD0000241
 #define TEE_ATTR_ECC_PRIVATE_VALUE          0xC0000341
 #define TEE_ATTR_ECC_CURVE                  0xF0000441
+#define TEE_ATTR_SM2_ID_INITIATOR           0xD0000446
+#define TEE_ATTR_SM2_ID_RESPONDER           0xD0000546
+#define TEE_ATTR_SM2_KEP_USER               0xF0000646
+#define TEE_ATTR_SM2_KEP_CONFIRMATION_IN    0xD0000746
+#define TEE_ATTR_SM2_KEP_CONFIRMATION_OUT   0xD0000846
 
-#define TEE_ATTR_BIT_PROTECTED		(1 << 28)
-#define TEE_ATTR_BIT_VALUE		(1 << 29)
+/*
+ * Commit 5b385b3f835d ("core: crypto: add support for SM2 KEP") defined by
+ * mistake the wrong values for these two. OP-TEE recognizes these two as
+ * alternative IDs in parallel with the correct official values when
+ * supplied as parameters when deriving a key using the TEE_ALG_SM2_KEP
+ * algorithm.
+ */
+#define __OPTEE_SM2_KEP_ATTR_ECC_EPHEMERAL_PUBLIC_VALUE_X 0xD0000946
+#define __OPTEE_SM2_KEP_ATTR_ECC_EPHEMERAL_PUBLIC_VALUE_Y 0xD0000A46
+
+#define TEE_ATTR_ECC_EPHEMERAL_PUBLIC_VALUE_X 0xD0000146
+#define TEE_ATTR_ECC_EPHEMERAL_PUBLIC_VALUE_Y 0xD0000246
+#define TEE_ATTR_EDDSA_CTX                  0xD0000643   /* v1.3.1 spec */
+#define TEE_ATTR_ED25519_PUBLIC_VALUE       0xD0000743   /* v1.3.1 spec */
+#define TEE_ATTR_ED25519_PRIVATE_VALUE      0xC0000843   /* v1.3.1 spec */
+#define TEE_ATTR_X25519_PUBLIC_VALUE        0xD0000944
+#define TEE_ATTR_X25519_PRIVATE_VALUE       0xC0000A44
+#define TEE_ATTR_EDDSA_PREHASH              0xF0000004   /* v1.3.1 spec */
+
+#define TEE_ATTR_FLAG_PUBLIC		(1 << 28)
+#define TEE_ATTR_FLAG_VALUE		(1 << 29)
+/*
+ * Deprecated, but kept for backwards compatibility
+ *
+ * Be careful with GPD TEE Internal API specification v1.0 where table 6-12
+ * defines BIT [28] with the right meaning whereas sections 5.4.3 and 5.4.4
+ * falsely describe a reversed bit flag value meaning.
+ */
+#define TEE_ATTR_BIT_PROTECTED		TEE_ATTR_FLAG_PUBLIC
+#define TEE_ATTR_BIT_VALUE		TEE_ATTR_FLAG_VALUE
 
 /* List of Supported ECC Curves */
+#define TEE_CRYPTO_ELEMENT_NONE             0x00000000
 #define TEE_ECC_CURVE_NIST_P192             0x00000001
 #define TEE_ECC_CURVE_NIST_P224             0x00000002
 #define TEE_ECC_CURVE_NIST_P256             0x00000003
 #define TEE_ECC_CURVE_NIST_P384             0x00000004
 #define TEE_ECC_CURVE_NIST_P521             0x00000005
-
+#define TEE_ECC_CURVE_25519                 0x00000300
+#define TEE_ECC_CURVE_SM2                   0x00000400
 
 /* Panicked Functions Identification */
 /* TA Interface */

@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <config.h>
 #include <kernel/mutex.h>
 #include <kernel/panic.h>
 #include <kernel/thread.h>
@@ -423,6 +424,8 @@ out:
 			fdp->dfh.idx = -1;
 		*fh = (struct tee_file_handle *)fdp;
 	} else {
+		if (res == TEE_ERROR_SECURITY)
+			DMSG("Secure storage corruption detected");
 		if (fdp->fd != -1)
 			tee_fs_rpc_close(OPTEE_RPC_CMD_FS, fdp->fd);
 		if (create)
@@ -469,7 +472,7 @@ static const struct tee_fs_dirfile_operations ree_dirf_ops = {
 static struct tee_fs_dirfile_dirh *ree_fs_dirh;
 static size_t ree_fs_dirh_refcount;
 
-#ifdef CFG_RPMB_FS
+#ifdef CFG_REE_FS_INTEGRITY_RPMB
 static struct tee_file_handle *ree_fs_rpmb_fh;
 
 static TEE_Result open_dirh(struct tee_fs_dirfile_dirh **dirh)
@@ -494,12 +497,32 @@ static TEE_Result open_dirh(struct tee_fs_dirfile_dirh **dirh)
 	if (res)
 		return res;
 
-	if (!tee_fs_dirfile_open(false, hashp, &ree_dirf_ops, dirh))
-		return TEE_SUCCESS;
+	res = tee_fs_dirfile_open(false, hashp, &ree_dirf_ops, dirh);
 
-	res = tee_fs_dirfile_open(true, NULL, &ree_dirf_ops, dirh);
+	if (res == TEE_ERROR_ITEM_NOT_FOUND) {
+		if (hashp) {
+			if (IS_ENABLED(CFG_REE_FS_ALLOW_RESET)) {
+				DMSG("dirf.db not found, clear hash in RPMB");
+				res = rpmb_fs_ops.truncate(ree_fs_rpmb_fh, 0);
+				if (res) {
+					DMSG("Can't clear hash: %#"PRIx32, res);
+					res = TEE_ERROR_SECURITY;
+					goto out;
+				}
+			} else {
+				DMSG("dirf.db file not found");
+				res = TEE_ERROR_SECURITY;
+				goto out;
+			}
+		}
+
+		res = tee_fs_dirfile_open(true, NULL, &ree_dirf_ops, dirh);
+	}
+
+out:
 	if (res)
 		rpmb_fs_ops.close(&ree_fs_rpmb_fh);
+
 	return res;
 }
 
@@ -521,12 +544,16 @@ static void close_dirh(struct tee_fs_dirfile_dirh **dirh)
 	rpmb_fs_ops.close(&ree_fs_rpmb_fh);
 }
 
-#else /*!CFG_RPMB_FS*/
+#else /*!CFG_REE_FS_INTEGRITY_RPMB*/
 static TEE_Result open_dirh(struct tee_fs_dirfile_dirh **dirh)
 {
-	if (!tee_fs_dirfile_open(false, NULL, &ree_dirf_ops, dirh))
-		return TEE_SUCCESS;
-	return tee_fs_dirfile_open(true, NULL, &ree_dirf_ops, dirh);
+	TEE_Result res;
+
+	res = tee_fs_dirfile_open(false, NULL, &ree_dirf_ops, dirh);
+	if (res == TEE_ERROR_ITEM_NOT_FOUND)
+		return tee_fs_dirfile_open(true, NULL, &ree_dirf_ops, dirh);
+
+	return res;
 }
 
 static TEE_Result commit_dirh_writes(struct tee_fs_dirfile_dirh *dirh)
@@ -539,7 +566,7 @@ static void close_dirh(struct tee_fs_dirfile_dirh **dirh)
 	tee_fs_dirfile_close(*dirh);
 	*dirh = NULL;
 }
-#endif /*!CFG_RPMB_FS*/
+#endif /*!CFG_REE_FS_INTEGRITY_RPMB*/
 
 static TEE_Result get_dirh(struct tee_fs_dirfile_dirh **dirh)
 {
@@ -620,7 +647,7 @@ static TEE_Result ree_fs_open(struct tee_pobj *po, size_t *size,
 
 out:
 	if (res)
-		put_dirh(dirh, false);
+		put_dirh(dirh, true);
 	mutex_unlock(&ree_fs_mutex);
 
 	return res;

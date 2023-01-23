@@ -12,12 +12,16 @@ OUTPUT_ARCH(arm)
 OUTPUT_FORMAT("elf64-littleaarch64")
 OUTPUT_ARCH(aarch64)
 #endif
+#ifdef RV64
+OUTPUT_ARCH(riscv)
+#endif
 
 ENTRY(_ldelf_start)
 SECTIONS {
 	.text : {
 		__text_start = .;
-		*(.text._ldelf_start .text .text.*)
+		*(.text._ldelf_start)
+		*(.text .text.*)
 		*(.stub)
 		*(.glue_7)
 		*(.glue_7t)
@@ -26,6 +30,7 @@ SECTIONS {
 		*(.vfp11_veneer)
 		__text_end = .;
 	}
+	.note.gnu.property : { *(.note.gnu.property) }
         .plt : { *(.plt) }
 
 	.eh_frame : { *(.eh_frame) }
@@ -42,10 +47,11 @@ SECTIONS {
 	.dynstr : { *(.dynstr) }
 	.hash : { *(.hash) }
 
-	/* Page align to allow dropping execute bit for RW data */
-	. = ALIGN(4096);
-
-	.got : { *(.got.plt) *(.got) }
+	/*
+	 * Relocation sections may be aligned on 4 or 8 bytes. With ALIGN(8)
+	 * we avoid any padding between __reloc_begin and the first relocation.
+	 */
+	. = ALIGN(8);
 	__reloc_begin = .;
 	.rel.got : { *(.rel.got) }
 	.rela.got : { *(.rela.got) }
@@ -71,7 +77,11 @@ SECTIONS {
 	.rela.plt : { *(.rela.plt) }
 	__reloc_end = .;
 
+	/* Page align to allow dropping execute bit for RW data */
+	. = ALIGN(4096);
+
 	.dynamic : { *(.dynamic) }
+	.got : { *(.got.plt) *(.got) }
 
 	.data : { *(.data .data.* .gnu.linkonce.d.*) }
 	.bss : { *(.bss .bss.* .gnu.linkonce.b.* COMMON) }

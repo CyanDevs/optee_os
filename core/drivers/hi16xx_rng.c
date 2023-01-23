@@ -39,8 +39,10 @@ static unsigned int rng_lock = SPINLOCK_UNLOCK;
 
 static TEE_Result hi16xx_rng_init(void)
 {
-	vaddr_t alg = (vaddr_t)phys_to_virt(ALG_SC_BASE, MEM_AREA_IO_SEC);
-	vaddr_t rng = (vaddr_t)phys_to_virt(RNG_BASE, MEM_AREA_IO_SEC);
+	vaddr_t alg = (vaddr_t)phys_to_virt(ALG_SC_BASE, MEM_AREA_IO_SEC,
+					    ALG_SC_REG_SIZE);
+	vaddr_t rng = (vaddr_t)phys_to_virt(RNG_BASE, MEM_AREA_IO_SEC,
+					    RNG_REG_SIZE);
 	TEE_Time time;
 
 	/* ALG sub-controller must allow RNG out of reset */
@@ -60,7 +62,7 @@ static TEE_Result hi16xx_rng_init(void)
 	return TEE_SUCCESS;
 }
 
-uint8_t hw_get_random_byte(void)
+TEE_Result hw_get_random_bytes(void *buf, size_t len)
 {
 	static vaddr_t r;
 	static int pos;
@@ -68,25 +70,31 @@ uint8_t hw_get_random_byte(void)
 		uint32_t val;
 		uint8_t byte[4];
 	} random;
-	uint8_t ret;
+	size_t buffer_pos = 0;
+	uint8_t *buffer = buf;
 	uint32_t exceptions;
 
 	exceptions = cpu_spin_lock_xsave(&rng_lock);
-
 	if (!r)
-		r = (vaddr_t)phys_to_virt(RNG_BASE, MEM_AREA_IO_SEC) + RNG_NUM;
-
-	if (!pos)
-		random.val = io_read32(r);
-
-	ret = random.byte[pos++];
-
-	if (pos == 4)
-		pos = 0;
-
+		r = (vaddr_t)phys_to_virt(RNG_BASE, MEM_AREA_IO_SEC, 1) +
+			RNG_NUM;
 	cpu_spin_unlock_xrestore(&rng_lock, exceptions);
 
-	return ret;
+	while (buffer_pos < len) {
+		exceptions = cpu_spin_lock_xsave(&rng_lock);
+
+		/* Refill our FIFO */
+		if (pos == 0)
+			random.val = io_read32(r);
+
+		buffer[buffer_pos++] = random.byte[pos++];
+		if (pos == 4)
+			pos = 0;
+
+		cpu_spin_unlock_xrestore(&rng_lock, exceptions);
+	}
+
+	return TEE_SUCCESS;
 }
 
 driver_init(hi16xx_rng_init);

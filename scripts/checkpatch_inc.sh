@@ -1,14 +1,19 @@
 #!/bin/bash
 
 CHECKPATCH="${CHECKPATCH:-checkpatch.pl}"
+CHECKPATCH_OPT="${CHECKPATCH_OPT:-}"
 # checkpatch.pl will ignore the following paths
 CHECKPATCH_IGNORE=$(echo \
 		core/include/gen-asm-defines.h \
 		core/lib/lib{fdt,tomcrypt} core/lib/zlib \
 		lib/libutils lib/libmbedtls \
+		lib/libutee/include/elf.h \
+		lib/libutee/include/elf_common.h \
 		core/arch/arm/include/arm{32,64}.h \
 		core/arch/arm/plat-ti/api_monitor_index_a{9,15}.h \
-		core/arch/arm/dts)
+		core/arch/arm/dts \
+		ta/pkcs11/scripts/verify-helpers.sh \
+		core/arch/riscv/include/encoding.h )
 _CP_EXCL=$(for p in $CHECKPATCH_IGNORE; do echo ":(exclude)$p" ; done)
 
 function _checkpatch() {
@@ -18,12 +23,7 @@ function _checkpatch() {
 				typedefs_opt="";
 		# Ignore NOT_UNIFIED_DIFF in case patch has no diff
 		# (e.g., all paths filtered out)
-		$CHECKPATCH --quiet --ignore FILE_PATH_CHANGES \
-				--ignore GERRIT_CHANGE_ID \
-				--ignore NOT_UNIFIED_DIFF \
-				--no-tree \
-				$typedefs_opt \
-				-
+		$CHECKPATCH $CHECKPATCH_OPT $typedefs_opt -
 }
 
 function checkpatch() {

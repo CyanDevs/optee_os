@@ -51,6 +51,8 @@
 #define SIZE(x)
 #endif
 
+	.section .note.GNU-stack,"",%progbits
+
 /* Arm/Thumb interworking support:
 
    The interworking scheme expects functions to use a BX instruction
@@ -204,7 +206,9 @@ SYM (\name):
 	mov		ip, sp
 	stmea		a1!, { v1-v7, fp, ip, lr }
 #else
-	stmea		a1!, { v1-v7, fp, ip, sp, lr }
+	stmea		a1!, { v1-v7, fp, ip}
+	str 		sp, [a1], #4
+	str 		lr, [a1], #4
 #endif
 	
 #if 0	/* Simulator does not cope with FP instructions yet.  */
@@ -214,7 +218,7 @@ SYM (\name):
 #endif
 #endif		
 
-#ifdef CFG_TA_FTRACE_SUPPORT
+#ifdef CFG_FTRACE_SUPPORT
 	stmdb		sp!, { lr }
 	/*
 	 * As ftrace is supported in ARM mode only, so hardcode jmp_buf
@@ -238,7 +242,7 @@ SYM (\name):
 
 	/* If we have stack extension code it ought to be handled here.  */
 	
-#ifdef CFG_TA_FTRACE_SUPPORT
+#ifdef CFG_FTRACE_SUPPORT
 	stmdb		sp!, { a1, a2, lr }
 	/*
 	 * As ftrace is supported in ARM mode only, so hardcode jmp_buf
@@ -254,7 +258,9 @@ SYM (\name):
 	ldmfd		a1!, { v1-v7, fp, ip, lr }
 	mov		sp, ip
 #else
-	ldmfd		a1!, { v1-v7, fp, ip, sp, lr }
+	ldmfd		a1!, { v1-v7, fp, ip }
+	ldr		sp, [a1], #4
+	ldr 		lr, [a1], #4
 #endif
 	
 #if 0	/* Simulator does not cope with FP instructions yet.  */

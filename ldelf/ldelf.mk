@@ -17,9 +17,15 @@ endif
 ifeq ($(CFG_ARM32_core),y)
 CFG_ARM32_$(sm) := y
 endif
+ifeq ($(CFG_RV64_core),y)
+CFG_RV64_$(sm) := y
+endif
+
+arch-bits-$(sm) := $(arch-bits-core)
 
 cppflags$(sm)	+= -include $(conf-file)
 cppflags$(sm)	+= -DTRACE_LEVEL=$(CFG_TEE_CORE_LOG_LEVEL)
+cppflags$(sm)	+= -D__LDELF__
 
 # Use same compiler as for core
 CROSS_COMPILE_$(sm)	:= $(CROSS_COMPILE_core)
@@ -34,6 +40,10 @@ include mk/lib.mk
 
 libname = utee
 libdir = lib/libutee
+include mk/lib.mk
+
+libname = unw
+libdir = lib/libunw
 include mk/lib.mk
 
 base-prefix :=

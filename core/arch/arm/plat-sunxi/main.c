@@ -34,19 +34,15 @@
 #include <drivers/gic.h>
 #include <drivers/serial8250_uart.h>
 #include <drivers/tzc380.h>
-#include <kernel/generic_boot.h>
+#include <kernel/boot.h>
 #include <kernel/misc.h>
 #include <kernel/panic.h>
-#include <kernel/pm_stubs.h>
 #include <kernel/tz_ssvce_def.h>
 #include <mm/core_mmu.h>
 #include <mm/core_memprot.h>
 #include <mm/tee_pager.h>
 #include <platform_config.h>
-#include <sm/tee_mon.h>
 #include <sm/optee_smc.h>
-#include <tee/entry_fast.h>
-#include <tee/entry_std.h>
 
 #ifdef GIC_BASE
 register_phys_mem_pgdir(MEM_AREA_IO_SEC, GIC_BASE, CORE_MMU_PGDIR_SIZE);
@@ -93,38 +89,7 @@ static struct gic_data gic_data;
 static void tzpc_init(void);
 #endif
 
-static void main_fiq(void)
-{
-	panic();
-}
-
-static const struct thread_handlers handlers = {
-	.std_smc = tee_entry_std,
-	.fast_smc = tee_entry_fast,
-	.nintr = main_fiq,
-#if defined(CFG_WITH_ARM_TRUSTED_FW)
-	.cpu_on = cpu_on_handler,
-	.cpu_off = pm_do_nothing,
-	.cpu_suspend = pm_do_nothing,
-	.cpu_resume = pm_do_nothing,
-	.system_off = pm_do_nothing,
-	.system_reset = pm_do_nothing,
-#else
-	.cpu_on = pm_panic,
-	.cpu_off = pm_panic,
-	.cpu_suspend = pm_panic,
-	.cpu_resume = pm_panic,
-	.system_off = pm_panic,
-	.system_reset = pm_panic,
-#endif
-};
-
 static struct serial8250_uart_data console_data;
-
-const struct thread_handlers *generic_boot_get_handlers(void)
-{
-	return &handlers;
-}
 
 void console_init(void)
 {
@@ -138,7 +103,8 @@ void console_init(void)
 #ifdef SUNXI_TZPC_BASE
 static void tzpc_init(void)
 {
-	vaddr_t v = (vaddr_t)phys_to_virt(SUNXI_TZPC_BASE, MEM_AREA_IO_SEC);
+	vaddr_t v = (vaddr_t)phys_to_virt(SUNXI_TZPC_BASE, MEM_AREA_IO_SEC,
+					  SUNXI_TZPC_REG_SIZE);
 
 	DMSG("SMTA_DECPORT0=%x", io_read32(v + REG_TZPC_SMTA_DECPORT0_STA_REG));
 	DMSG("SMTA_DECPORT1=%x", io_read32(v + REG_TZPC_SMTA_DECPORT1_STA_REG));
@@ -162,17 +128,7 @@ static inline void tzpc_init(void)
 #ifndef CFG_WITH_ARM_TRUSTED_FW
 void main_init_gic(void)
 {
-	vaddr_t gicc_base;
-	vaddr_t gicd_base;
-
-	gicc_base = core_mmu_get_va(GIC_BASE + GICC_OFFSET, MEM_AREA_IO_SEC);
-	gicd_base = core_mmu_get_va(GIC_BASE + GICD_OFFSET, MEM_AREA_IO_SEC);
-
-	if (!gicc_base || !gicd_base)
-		panic();
-
-	/* Initialize GIC */
-	gic_init(&gic_data, gicc_base, gicd_base);
+	gic_init(&gic_data, GIC_BASE + GICC_OFFSET, GIC_BASE + GICD_OFFSET);
 	itr_init(&gic_data.chip);
 }
 
@@ -183,12 +139,9 @@ void main_secondary_init_gic(void)
 #endif
 
 #ifdef ARM32
-void plat_cpu_reset_late(void)
+void plat_primary_init_early(void)
 {
 	assert(!cpu_mmu_enabled());
-
-	if (get_core_pos())
-		return;
 
 	tzpc_init();
 }
@@ -201,7 +154,8 @@ void plat_cpu_reset_late(void)
 #ifdef CFG_TZC380
 vaddr_t smc_base(void)
 {
-	return (vaddr_t)phys_to_virt(SUNXI_SMC_BASE, MEM_AREA_IO_SEC);
+	return (vaddr_t)phys_to_virt(SUNXI_SMC_BASE, MEM_AREA_IO_SEC,
+				     TZC400_REG_SIZE);
 }
 
 static TEE_Result smc_init(void)

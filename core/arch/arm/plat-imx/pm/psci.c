@@ -12,16 +12,16 @@
 #include <imx.h>
 #include <imx_pm.h>
 #include <imx-regs.h>
-#include <kernel/generic_boot.h>
+#include <kernel/boot.h>
 #include <kernel/misc.h>
 #include <kernel/panic.h>
-#include <kernel/pm_stubs.h>
 #include <mm/core_mmu.h>
 #include <mm/core_memprot.h>
 #include <platform_config.h>
 #include <stdint.h>
 #include <sm/optee_smc.h>
 #include <sm/psci.h>
+#include <sm/std_smc.h>
 #include <tee/entry_std.h>
 #include <tee/entry_fast.h>
 #include <atomic.h>
@@ -31,6 +31,7 @@ uint32_t active_cores = 1;
 int psci_features(uint32_t psci_fid)
 {
 	switch (psci_fid) {
+	case ARM_SMCCC_VERSION:
 	case PSCI_PSCI_FEATURES:
 	case PSCI_VERSION:
 	case PSCI_CPU_OFF:
@@ -40,6 +41,7 @@ int psci_features(uint32_t psci_fid)
 	case PSCI_AFFINITY_INFO:
 	case PSCI_SYSTEM_OFF:
 	case PSCI_SYSTEM_RESET:
+	case PSCI_SYSTEM_RESET2:
 		return PSCI_RET_SUCCESS;
 
 	case PSCI_CPU_SUSPEND:
@@ -60,7 +62,7 @@ int psci_cpu_on(uint32_t core_idx, uint32_t entry,
 		uint32_t context_id)
 {
 	uint32_t val;
-	vaddr_t va = core_mmu_get_va(SRC_BASE, MEM_AREA_IO_SEC);
+	vaddr_t va = core_mmu_get_va(SRC_BASE, MEM_AREA_IO_SEC, 1);
 
 	if (!va)
 		EMSG("No SRC mapping\n");
@@ -71,23 +73,21 @@ int psci_cpu_on(uint32_t core_idx, uint32_t entry,
 	atomic_inc32(&active_cores);
 
 	/* set secondary cores' NS entry addresses */
-	generic_boot_set_core_ns_entry(core_idx, entry, context_id);
+	boot_set_core_ns_entry(core_idx, entry, context_id);
 
 	val = virt_to_phys((void *)TEE_TEXT_VA_START);
-	if (soc_is_imx7ds()) {
-		io_write32(va + SRC_GPR1_MX7 + core_idx * 8, val);
 
-		imx_gpcv2_set_core1_pup_by_software();
+#ifdef CFG_MX7
+	io_write32(va + SRC_GPR1_MX7 + core_idx * 8, val);
 
-		/* release secondary core */
-		val = io_read32(va + SRC_A7RCR1);
-		val |=  BIT32(SRC_A7RCR1_A7_CORE1_ENABLE_OFFSET +
-			      (core_idx - 1));
-		io_write32(va + SRC_A7RCR1, val);
+	imx_gpcv2_set_core1_pup_by_software();
 
-		return PSCI_RET_SUCCESS;
-	}
-
+	/* release secondary core */
+	val = io_read32(va + SRC_A7RCR1);
+	val |=  BIT32(SRC_A7RCR1_A7_CORE1_ENABLE_OFFSET +
+			(core_idx - 1));
+	io_write32(va + SRC_A7RCR1, val);
+#else
 	/* boot secondary cores from OP-TEE load address */
 	io_write32(va + SRC_GPR1 + core_idx * 8, val);
 
@@ -98,11 +98,12 @@ int psci_cpu_on(uint32_t core_idx, uint32_t entry,
 	io_write32(va + SRC_SCR, val);
 
 	imx_set_src_gpr(core_idx, 0);
+#endif /* CFG_MX7 */
 
 	return PSCI_RET_SUCCESS;
 }
 
-int psci_cpu_off(void)
+int __noreturn psci_cpu_off(void)
 {
 	uint32_t core_id;
 
@@ -120,15 +121,14 @@ int psci_cpu_off(void)
 
 	while (true)
 		wfi();
-
-	return PSCI_RET_INTERNAL_FAILURE;
 }
 
 int psci_affinity_info(uint32_t affinity,
 		       uint32_t lowest_affnity_level __unused)
 {
-	vaddr_t va = core_mmu_get_va(SRC_BASE, MEM_AREA_IO_SEC);
-	vaddr_t gpr5 = core_mmu_get_va(IOMUXC_BASE, MEM_AREA_IO_SEC) +
+	vaddr_t va = core_mmu_get_va(SRC_BASE, MEM_AREA_IO_SEC, 1);
+	vaddr_t gpr5 = core_mmu_get_va(IOMUXC_BASE, MEM_AREA_IO_SEC,
+				       IOMUXC_GPR5_OFFSET + sizeof(uint32_t)) +
 				       IOMUXC_GPR5_OFFSET;
 	uint32_t cpu, val;
 	bool wfi;
@@ -175,13 +175,15 @@ int psci_affinity_info(uint32_t affinity,
 
 void __noreturn psci_system_off(void)
 {
-	vaddr_t snvs_base = core_mmu_get_va(SNVS_BASE, MEM_AREA_IO_SEC);
+#ifndef CFG_MX7ULP
+	vaddr_t snvs_base = core_mmu_get_va(SNVS_BASE, MEM_AREA_IO_SEC, 1);
 
 	io_write32(snvs_base + SNVS_LPCR_OFF,
 		   SNVS_LPCR_TOP_MASK |
 		   SNVS_LPCR_DP_EN_MASK |
 		   SNVS_LPCR_SRTC_ENV_MASK);
 	dsb();
+#endif
 
 	while (1)
 		;
@@ -217,7 +219,14 @@ int psci_cpu_suspend(uint32_t power_state __maybe_unused,
 	return ret;
 }
 
-void psci_system_reset(void)
+void __noreturn psci_system_reset(void)
 {
-	imx_wdog_restart();
+	imx_wdog_restart(true);
+}
+
+int __noreturn psci_system_reset2(uint32_t reset_type __unused,
+				  uint32_t cookie __unused)
+{
+	/* force WDOG reset */
+	imx_wdog_restart(false);
 }

@@ -1,46 +1,10 @@
-// SPDX-License-Identifier: BSD-2-Clause
-/*
- * Copyright (c) 2001-2007, Tom St Denis
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- * this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- * this list of conditions and the following disclaimer in the documentation
- * and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- */
-
-/* LibTomCrypt, modular cryptographic library -- Tom St Denis
- *
- * LibTomCrypt is a library that provides various cryptographic
- * algorithms in a highly modular and flexible manner.
- *
- * The library is free for all purposes without any express
- * guarantee it works.
- *
- * Tom St Denis, tomstdenis@gmail.com, http://libtom.org
- */
-#include "tomcrypt.h"
+/* LibTomCrypt, modular cryptographic library -- Tom St Denis */
+/* SPDX-License-Identifier: Unlicense */
+#include "tomcrypt_private.h"
 
 /**
   @file sha1.c
-  LTC_SHA1 code by Tom St Denis 
+  LTC_SHA1 code by Tom St Denis
 */
 
 
@@ -70,9 +34,9 @@ const struct ltc_hash_descriptor sha1_desc =
 #define F3(x,y,z)  (x ^ y ^ z)
 
 #ifdef LTC_CLEAN_STACK
-static int _sha1_compress(hash_state *md, unsigned char *buf)
+static int ss_sha1_compress(hash_state *md, const unsigned char *buf)
 #else
-static int  sha1_compress(hash_state *md, unsigned char *buf)
+static int  s_sha1_compress(hash_state *md, const unsigned char *buf)
 #endif
 {
     ulong32 a,b,c,d,e,W[80],i;
@@ -94,7 +58,7 @@ static int  sha1_compress(hash_state *md, unsigned char *buf)
 
     /* expand it */
     for (i = 16; i < 80; i++) {
-        W[i] = ROL(W[i-3] ^ W[i-8] ^ W[i-14] ^ W[i-16], 1); 
+        W[i] = ROL(W[i-3] ^ W[i-8] ^ W[i-14] ^ W[i-16], 1);
     }
 
     /* compress */
@@ -103,9 +67,9 @@ static int  sha1_compress(hash_state *md, unsigned char *buf)
     #define FF1(a,b,c,d,e,i) e = (ROLc(a, 5) + F1(b,c,d) + e + W[i] + 0x6ed9eba1UL); b = ROLc(b, 30);
     #define FF2(a,b,c,d,e,i) e = (ROLc(a, 5) + F2(b,c,d) + e + W[i] + 0x8f1bbcdcUL); b = ROLc(b, 30);
     #define FF3(a,b,c,d,e,i) e = (ROLc(a, 5) + F3(b,c,d) + e + W[i] + 0xca62c1d6UL); b = ROLc(b, 30);
- 
+
 #ifdef LTC_SMALL_CODE
- 
+
     for (i = 0; i < 20; ) {
        FF0(a,b,c,d,e,i++); t = e; e = d; d = c; c = b; b = a; a = t;
     }
@@ -133,7 +97,7 @@ static int  sha1_compress(hash_state *md, unsigned char *buf)
     }
 
     /* round two */
-    for (; i < 40; )  { 
+    for (; i < 40; )  {
        FF1(a,b,c,d,e,i++);
        FF1(e,a,b,c,d,i++);
        FF1(d,e,a,b,c,i++);
@@ -142,7 +106,7 @@ static int  sha1_compress(hash_state *md, unsigned char *buf)
     }
 
     /* round three */
-    for (; i < 60; )  { 
+    for (; i < 60; )  {
        FF2(a,b,c,d,e,i++);
        FF2(e,a,b,c,d,i++);
        FF2(d,e,a,b,c,i++);
@@ -151,7 +115,7 @@ static int  sha1_compress(hash_state *md, unsigned char *buf)
     }
 
     /* round four */
-    for (; i < 80; )  { 
+    for (; i < 80; )  {
        FF3(a,b,c,d,e,i++);
        FF3(e,a,b,c,d,i++);
        FF3(d,e,a,b,c,i++);
@@ -176,10 +140,10 @@ static int  sha1_compress(hash_state *md, unsigned char *buf)
 }
 
 #ifdef LTC_CLEAN_STACK
-static int sha1_compress(hash_state *md, unsigned char *buf)
+static int s_sha1_compress(hash_state *md, const unsigned char *buf)
 {
    int err;
-   err = _sha1_compress(md, buf);
+   err = ss_sha1_compress(md, buf);
    burn_stack(sizeof(ulong32) * 87);
    return err;
 }
@@ -210,7 +174,7 @@ int sha1_init(hash_state * md)
    @param inlen  The length of the data (octets)
    @return CRYPT_OK if successful
 */
-HASH_PROCESS(sha1_process, sha1_compress, sha1, 64)
+HASH_PROCESS(sha1_process, s_sha1_compress, sha1, 64)
 
 /**
    Terminate the hash to get the digest
@@ -243,7 +207,7 @@ int sha1_done(hash_state * md, unsigned char *out)
         while (md->sha1.curlen < 64) {
             md->sha1.buf[md->sha1.curlen++] = (unsigned char)0;
         }
-        sha1_compress(md, md->sha1.buf);
+        s_sha1_compress(md, md->sha1.buf);
         md->sha1.curlen = 0;
     }
 
@@ -254,7 +218,7 @@ int sha1_done(hash_state * md, unsigned char *out)
 
     /* store length */
     STORE64H(md->sha1.length, md->sha1.buf+56);
-    sha1_compress(md, md->sha1.buf);
+    s_sha1_compress(md, md->sha1.buf);
 
     /* copy output */
     for (i = 0; i < 5; i++) {
@@ -269,12 +233,12 @@ int sha1_done(hash_state * md, unsigned char *out)
 /**
   Self-test the hash
   @return CRYPT_OK if successful, CRYPT_NOP if self-tests have been disabled
-*/  
+*/
 int  sha1_test(void)
 {
  #ifndef LTC_TEST
     return CRYPT_NOP;
- #else    
+ #else
   static const struct {
       const char *msg;
       unsigned char hash[20];
@@ -297,9 +261,9 @@ int  sha1_test(void)
 
   for (i = 0; i < (int)(sizeof(tests) / sizeof(tests[0]));  i++) {
       sha1_init(&md);
-      sha1_process(&md, (unsigned char*)tests[i].msg, (unsigned long)strlen(tests[i].msg));
+      sha1_process(&md, (unsigned char*)tests[i].msg, (unsigned long)XSTRLEN(tests[i].msg));
       sha1_done(&md, tmp);
-      if (XMEMCMP(tmp, tests[i].hash, 20) != 0) {
+      if (compare_testvector(tmp, sizeof(tmp), tests[i].hash, sizeof(tests[i].hash), "SHA1", i)) {
          return CRYPT_FAIL_TESTVECTOR;
       }
   }
@@ -310,7 +274,3 @@ int  sha1_test(void)
 #endif
 
 
-
-/* $Source: /cvs/libtom/libtomcrypt/src/hashes/sha1.c,v $ */
-/* $Revision: 1.10 $ */
-/* $Date: 2007/05/12 14:25:28 $ */

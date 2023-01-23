@@ -8,6 +8,7 @@ ldelf: $(link-out-dir$(sm))/ldelf.elf
 all: ldelf
 
 cleanfiles += $(link-out-dir$(sm))/ldelf.dmp
+cleanfiles += $(link-out-dir$(sm))/ldelf.map
 cleanfiles += $(link-out-dir$(sm))/ldelf.elf
 cleanfiles += $(link-script-pp$(sm)) $(link-script-dep$(sm))
 
@@ -16,13 +17,19 @@ link-ldflags += -T $(link-script-pp$(sm))
 link-ldflags += -Map=$(link-out-dir$(sm))/ldelf.map
 link-ldflags += --sort-section=alignment
 link-ldflags += -z max-page-size=4096 # OP-TEE always uses 4K alignment
+ifeq ($(CFG_CORE_BTI),y)
+link-ldflags += $(call ld-option,-z force-bti) --fatal-warnings
+endif
+ifeq ($(CFG_ARM32_$(sm)), y)
+link-ldflags += $(call ld-option,--no-warn-execstack)
+endif
 link-ldflags += $(link-ldflags$(sm))
 
 link-ldadd  = $(addprefix -L,$(libdirs))
 link-ldadd += --start-group $(addprefix -l,$(libnames)) --end-group
-ldargs-ldelf.elf := $(link-ldflags) $(objs) $(link-ldadd)
+ldargs-ldelf.elf := $(link-ldflags) $(objs) $(link-ldadd) $(libgcc$(sm))
 
-link-script-cppflags-$(sm) := -DASM=1 \
+link-script-cppflags-$(sm) := \
 	$(filter-out $(CPPFLAGS_REMOVE) $(cppflags-remove), \
 		$(nostdinc$(sm)) $(CPPFLAGS) \
 		$(addprefix -I,$(incdirs$(sm)) $(link-out-dir$(sm))) \
@@ -37,8 +44,8 @@ $(link-script-pp$(sm)): $(link-script$(sm)) $(conf-file) \
 			$(link-script-pp-makefiles$(sm))
 	@$(cmd-echo-silent) '  CPP     $$@'
 	$(q)mkdir -p $$(dir $$@)
-	$(q)$(CPP$(sm)) -Wp,-P,-MT,$$@,-MD,$(link-script-dep$(sm)) \
-		$(link-script-cppflags-$(sm)) $$< > $$@
+	$(q)$(CPP$(sm)) -P -MT $$@ -MD -MF $(link-script-dep$(sm)) \
+		$(link-script-cppflags-$(sm)) $$< -o $$@
 
 $(link-out-dir$(sm))/ldelf.elf: $(objs) $(libdeps) $(link-script-pp$(sm))
 	@$(cmd-echo-silent) '  LD      $$@'

@@ -1,7 +1,5 @@
 include core/arch/arm/kernel/link.mk
 
+SRECFLAGS ?= --srec-forceS3 --adjust-vma=$(CFG_TZDRAM_START)
+
 all: $(link-out-dir)/tee.srec
-cleanfiles += $(link-out-dir)/tee.srec
-$(link-out-dir)/tee.srec: $(link-out-dir)/tee.elf
-	@$(cmd-echo-silent) '  GEN     $@'
-	$(q)$(OBJCOPYcore) -O srec $< $@

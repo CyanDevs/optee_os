@@ -17,11 +17,7 @@
 #define SUSPEND_OCRAM_OFFSET		0x0
 #define LOWPOWER_IDLE_OCRAM_OFFSET	0x1000
 
-#define MX7_STATEID_CORE_CLOCK_GATE	0x00000004
-#define MX7_STATEID_CLUSTER_CLOCK_GATE	0x00000040
-#define MX7_LEVELID_CLUSTER		0x01000000
-
-#ifndef ASM
+#ifndef __ASSEMBLER__
 #include <sm/sm.h>
 
 /* The structure is used for suspend and low power idle */

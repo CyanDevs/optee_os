@@ -7,7 +7,6 @@
 #include <bitstring.h>
 #include <crypto/crypto.h>
 #include <kernel/mutex.h>
-#include <kernel/refcount.h>
 #include <kernel/thread.h>
 #include <mm/mobj.h>
 #include <optee_rpc_cmd.h>
@@ -35,6 +34,14 @@ struct tee_tadb_dir {
 	bitstr_t *files;
 };
 
+/*
+ * struct tadb_entry - TA database entry
+ * @prop:	 properties of TA
+ * @file_number: encrypted TA is stored in <file_number>.ta
+ * @iv:		 Initialization vector of the authentication crypto
+ * @tag:	 Tag used to validate the authentication encrypted TA
+ * @key:	 Key used to decrypt the TA
+ */
 struct tadb_entry {
 	struct tee_tadb_property prop;
 	uint32_t file_number;
@@ -68,12 +75,15 @@ struct tee_tadb_ta_read {
 
 static const char tadb_obj_id[] = "ta.db";
 static struct tee_tadb_dir *tadb_db;
-static struct refcount tadb_db_refc;
+static unsigned int tadb_db_refc;
 static struct mutex tadb_mutex = MUTEX_INITIALIZER;
 
 static void file_num_to_str(char *buf, size_t blen, uint32_t file_number)
 {
-	snprintf(buf, blen, "%" PRIu32 ".ta", file_number);
+	int rc __maybe_unused = 0;
+
+	rc = snprintf(buf, blen, "%" PRIu32 ".ta", file_number);
+	assert(rc >= 0);
 }
 
 static bool is_null_uuid(const TEE_UUID *uuid)
@@ -86,21 +96,22 @@ static bool is_null_uuid(const TEE_UUID *uuid)
 static TEE_Result ta_operation_open(unsigned int cmd, uint32_t file_number,
 				    int *fd)
 {
-	struct mobj *mobj;
-	TEE_Result res;
-	void *va;
+	struct thread_param params[3] = { };
+	struct mobj *mobj = NULL;
+	TEE_Result res = TEE_SUCCESS;
+	void *va = NULL;
 
-	va = tee_fs_rpc_cache_alloc(TEE_FS_NAME_MAX, &mobj);
+	va = thread_rpc_shm_cache_alloc(THREAD_SHM_CACHE_USER_FS,
+					THREAD_SHM_TYPE_APPLICATION,
+					TEE_FS_NAME_MAX, &mobj);
 	if (!va)
 		return TEE_ERROR_OUT_OF_MEMORY;
 
 	file_num_to_str(va, TEE_FS_NAME_MAX, file_number);
 
-	struct thread_param params[] = {
-		[0] = THREAD_PARAM_VALUE(IN, cmd, 0, 0),
-		[1] = THREAD_PARAM_MEMREF(IN, mobj, 0, TEE_FS_NAME_MAX),
-		[2] = THREAD_PARAM_VALUE(OUT, 0, 0, 0),
-	};
+	params[0] = THREAD_PARAM_VALUE(IN, cmd, 0, 0);
+	params[1] = THREAD_PARAM_MEMREF(IN, mobj, 0, TEE_FS_NAME_MAX);
+	params[2] = THREAD_PARAM_VALUE(OUT, 0, 0, 0);
 
 	res = thread_rpc_cmd(OPTEE_RPC_CMD_FS, ARRAY_SIZE(params), params);
 	if (!res)
@@ -111,19 +122,20 @@ static TEE_Result ta_operation_open(unsigned int cmd, uint32_t file_number,
 
 static TEE_Result ta_operation_remove(uint32_t file_number)
 {
-	struct mobj *mobj;
-	void *va;
+	struct thread_param params[2] = { };
+	struct mobj *mobj = NULL;
+	void *va = NULL;
 
-	va = tee_fs_rpc_cache_alloc(TEE_FS_NAME_MAX, &mobj);
+	va = thread_rpc_shm_cache_alloc(THREAD_SHM_CACHE_USER_FS,
+					THREAD_SHM_TYPE_APPLICATION,
+					TEE_FS_NAME_MAX, &mobj);
 	if (!va)
 		return TEE_ERROR_OUT_OF_MEMORY;
 
 	file_num_to_str(va, TEE_FS_NAME_MAX, file_number);
 
-	struct thread_param params[] = {
-		[0] = THREAD_PARAM_VALUE(IN, OPTEE_RPC_FS_REMOVE, 0, 0),
-		[1] = THREAD_PARAM_MEMREF(IN, mobj, 0, TEE_FS_NAME_MAX),
-	};
+	params[0] = THREAD_PARAM_VALUE(IN, OPTEE_RPC_FS_REMOVE, 0, 0);
+	params[1] = THREAD_PARAM_MEMREF(IN, mobj, 0, TEE_FS_NAME_MAX);
 
 	return thread_rpc_cmd(OPTEE_RPC_CMD_FS, ARRAY_SIZE(params), params);
 }
@@ -158,12 +170,20 @@ static TEE_Result set_file(struct tee_tadb_dir *db, int idx)
 
 static void clear_file(struct tee_tadb_dir *db, int idx)
 {
+	/*
+	 * This is safe because db->nbits > 0 implies that
+	 * db->files is non-NULL (see maybe_grow_files()).
+	 */
 	if (idx < db->nbits)
 		bit_clear(db->files, idx);
 }
 
 static bool test_file(struct tee_tadb_dir *db, int idx)
 {
+	/*
+	 * This is safe because db->nbits > 0 implies that
+	 * db->files is non-NULL (see maybe_grow_files()).
+	 */
 	if (idx < db->nbits)
 		return bit_test(db->files, idx);
 
@@ -219,52 +239,35 @@ static TEE_Result tadb_open(struct tee_tadb_dir **db_ret)
 
 static TEE_Result tee_tadb_open(struct tee_tadb_dir **db)
 {
-	if (!refcount_inc(&tadb_db_refc)) {
-		TEE_Result res;
+	TEE_Result res = TEE_SUCCESS;
 
-		mutex_lock(&tadb_mutex);
-		if (!tadb_db) {
-			res = tadb_open(&tadb_db);
-			if (!res)
-				refcount_set(&tadb_db_refc, 1);
-		} else {
-			/*
-			 * This case is handling the small window where the
-			 * reference counter was decreased to 0 but before
-			 * the mutex was acquired by tadb_put() this thread
-			 * acquired the mutex instead.
-			 *
-			 * Since tadb_db isn't NULL it's enough to increase
-			 * the reference counter. If the value of the
-			 * counter is 0 refcount_inc() will fail and we'll
-			 * have to set it directly with refcount_set()
-			 * instead.
-			 */
-			if (!refcount_inc(&tadb_db_refc))
-				refcount_set(&tadb_db_refc, 1);
-			res = TEE_SUCCESS;
-		}
-		mutex_unlock(&tadb_mutex);
+	mutex_lock(&tadb_mutex);
+	if (!tadb_db_refc) {
+		assert(!tadb_db);
+		res = tadb_open(&tadb_db);
 		if (res)
-			return res;
+			goto err;
 	}
-
+	tadb_db_refc++;
 	*db = tadb_db;
-	return TEE_SUCCESS;
+err:
+	mutex_unlock(&tadb_mutex);
+	return res;
 }
 
 static void tadb_put(struct tee_tadb_dir *db)
 {
-	if (refcount_dec(&tadb_db_refc)) {
-		mutex_lock(&tadb_mutex);
-		if (!refcount_val(&tadb_db_refc) && tadb_db) {
-			db->ops->close(&db->fh);
-			free(db->files);
-			free(db);
-			tadb_db = NULL;
-		}
-		mutex_unlock(&tadb_mutex);
+	assert(db == tadb_db);
+	mutex_lock(&tadb_mutex);
+	assert(tadb_db_refc);
+	tadb_db_refc--;
+	if (!tadb_db_refc) {
+		db->ops->close(&db->fh);
+		free(db->files);
+		free(db);
+		tadb_db = NULL;
 	}
+	mutex_unlock(&tadb_mutex);
 }
 
 static void tee_tadb_close(struct tee_tadb_dir *db)
@@ -284,12 +287,11 @@ static TEE_Result tadb_authenc_init(TEE_OperationMode mode,
 	if (res)
 		return res;
 
-	res = crypto_authenc_init(ctx, TADB_AUTH_ENC_ALG, mode,
-				  entry->key, sizeof(entry->key),
+	res = crypto_authenc_init(ctx, mode, entry->key, sizeof(entry->key),
 				  entry->iv, sizeof(entry->iv),
 				  sizeof(entry->tag), 0, enc_size);
 	if (res)
-		crypto_authenc_free_ctx(ctx, TADB_AUTH_ENC_ALG);
+		crypto_authenc_free_ctx(ctx);
 	else
 		*ctx_ret = ctx;
 
@@ -302,9 +304,8 @@ static TEE_Result tadb_update_payload(void *ctx, TEE_OperationMode mode,
 	TEE_Result res;
 	size_t sz = len;
 
-	res = crypto_authenc_update_payload(ctx, TADB_AUTH_ENC_ALG, mode,
-					    (const uint8_t *)src, len, dst,
-					    &sz);
+	res = crypto_authenc_update_payload(ctx, mode, (const uint8_t *)src,
+					    len, dst, &sz);
 	assert(res || sz == len);
 	return res;
 }
@@ -318,7 +319,7 @@ static TEE_Result populate_files(struct tee_tadb_dir *db)
 	 * If db->files isn't NULL the bitfield is already populated and
 	 * there's nothing left to do here for now.
 	 */
-	if (db->files)
+	if (db->nbits)
 		return TEE_SUCCESS;
 
 	/*
@@ -478,8 +479,8 @@ TEE_Result tee_tadb_ta_write(struct tee_tadb_ta_write *ta, const void *buf,
 
 void tee_tadb_ta_close_and_delete(struct tee_tadb_ta_write *ta)
 {
-	crypto_authenc_final(ta->ctx, TADB_AUTH_ENC_ALG);
-	crypto_authenc_free_ctx(ta->ctx, TADB_AUTH_ENC_ALG);
+	crypto_authenc_final(ta->ctx);
+	crypto_authenc_free_ctx(ta->ctx);
 	tee_fs_rpc_close(OPTEE_RPC_CMD_FS, ta->fd);
 	ta_operation_remove(ta->entry.file_number);
 
@@ -548,8 +549,7 @@ TEE_Result tee_tadb_ta_close_and_commit(struct tee_tadb_ta_write *ta)
 	struct tadb_entry old_ent;
 	bool have_old_ent = false;
 
-	res = crypto_authenc_enc_final(ta->ctx, TADB_AUTH_ENC_ALG,
-				       NULL, 0, NULL, &dsz,
+	res = crypto_authenc_enc_final(ta->ctx, NULL, 0, NULL, &dsz,
 				       ta->entry.tag, &sz);
 	if (res)
 		goto err;
@@ -579,8 +579,8 @@ TEE_Result tee_tadb_ta_close_and_commit(struct tee_tadb_ta_write *ta)
 		clear_file(ta->db, old_ent.file_number);
 	mutex_unlock(&tadb_mutex);
 
-	crypto_authenc_final(ta->ctx, TADB_AUTH_ENC_ALG);
-	crypto_authenc_free_ctx(ta->ctx, TADB_AUTH_ENC_ALG);
+	crypto_authenc_final(ta->ctx);
+	crypto_authenc_free_ctx(ta->ctx);
 	tadb_put(ta->db);
 	free(ta);
 	if (have_old_ent)
@@ -632,10 +632,9 @@ TEE_Result tee_tadb_ta_delete(const TEE_UUID *uuid)
 TEE_Result tee_tadb_ta_open(const TEE_UUID *uuid,
 			    struct tee_tadb_ta_read **ta_ret)
 {
-	TEE_Result res;
-	size_t idx;
-	struct tee_tadb_ta_read *ta;
-	static struct tadb_entry last_entry;
+	TEE_Result res = TEE_SUCCESS;
+	size_t idx = 0;
+	struct tee_tadb_ta_read *ta = NULL;
 
 	if (is_null_uuid(uuid))
 		return TEE_ERROR_GENERIC;
@@ -644,19 +643,15 @@ TEE_Result tee_tadb_ta_open(const TEE_UUID *uuid,
 	if (!ta)
 		return TEE_ERROR_OUT_OF_MEMORY;
 
-	if (!memcmp(uuid, &last_entry.prop.uuid, sizeof(*uuid))) {
-		ta->entry = last_entry;
-	} else {
-		res = tee_tadb_open(&ta->db);
-		if (res)
-			goto err_free; /* Mustn't all tadb_put() */
+	res = tee_tadb_open(&ta->db);
+	if (res)
+		goto err_free; /* Mustn't call tadb_put() */
 
-		mutex_read_lock(&tadb_mutex);
-		res = find_ent(ta->db, uuid, &idx, &ta->entry);
-		mutex_read_unlock(&tadb_mutex);
-		if (res)
-			goto err;
-	}
+	mutex_read_lock(&tadb_mutex);
+	res = find_ent(ta->db, uuid, &idx, &ta->entry);
+	mutex_read_unlock(&tadb_mutex);
+	if (res)
+		goto err;
 
 	res = ta_operation_open(OPTEE_RPC_FS_OPEN, ta->entry.file_number,
 				&ta->fd);
@@ -699,6 +694,7 @@ TEE_Result tee_tadb_get_tag(struct tee_tadb_ta_read *ta, uint8_t *tag,
 
 static TEE_Result ta_load(struct tee_tadb_ta_read *ta)
 {
+	struct thread_param params[2] = { };
 	TEE_Result res;
 	const size_t sz = ta->entry.prop.custom_size + ta->entry.prop.bin_size;
 
@@ -709,13 +705,11 @@ static TEE_Result ta_load(struct tee_tadb_ta_read *ta)
 	if (!ta->ta_mobj)
 		return TEE_ERROR_OUT_OF_MEMORY;
 
-	ta->ta_buf = mobj_get_va(ta->ta_mobj, 0);
+	ta->ta_buf = mobj_get_va(ta->ta_mobj, 0, sz);
 	assert(ta->ta_buf);
 
-	struct thread_param params[] = {
-		[0] = THREAD_PARAM_VALUE(IN, OPTEE_RPC_FS_READ, ta->fd, 0),
-		[1] = THREAD_PARAM_MEMREF(OUT, ta->ta_mobj, 0, sz),
-	};
+	params[0] = THREAD_PARAM_VALUE(IN, OPTEE_RPC_FS_READ, ta->fd, 0);
+	params[1] = THREAD_PARAM_MEMREF(OUT, ta->ta_mobj, 0, sz);
 
 	res = thread_rpc_cmd(OPTEE_RPC_CMD_FS, ARRAY_SIZE(params), params);
 	if (res) {
@@ -768,8 +762,7 @@ TEE_Result tee_tadb_ta_read(struct tee_tadb_ta_read *ta, void *buf, size_t *len)
 	if (ta->pos == sz) {
 		size_t dl = 0;
 
-		res = crypto_authenc_dec_final(ta->ctx, TADB_AUTH_ENC_ALG,
-					       NULL, 0, NULL, &dl,
+		res = crypto_authenc_dec_final(ta->ctx, NULL, 0, NULL, &dl,
 					       ta->entry.tag, TADB_TAG_SIZE);
 		if (res)
 			return res;
@@ -780,8 +773,8 @@ TEE_Result tee_tadb_ta_read(struct tee_tadb_ta_read *ta, void *buf, size_t *len)
 
 void tee_tadb_ta_close(struct tee_tadb_ta_read *ta)
 {
-	crypto_authenc_final(ta->ctx, TADB_AUTH_ENC_ALG);
-	crypto_authenc_free_ctx(ta->ctx, TADB_AUTH_ENC_ALG);
+	crypto_authenc_final(ta->ctx);
+	crypto_authenc_free_ctx(ta->ctx);
 	if (ta->ta_mobj)
 		thread_rpc_free_payload(ta->ta_mobj);
 	tee_fs_rpc_close(OPTEE_RPC_CMD_FS, ta->fd);

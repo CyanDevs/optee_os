@@ -2,6 +2,7 @@
 /*
  * Copyright (c) 1994-2009  Red Hat, Inc.
  * Copyright (c) 2016, Linaro Limited
+ * Copyright 2022-2023 NXP
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -34,6 +35,8 @@
 #ifndef __SETJMP_H
 #define __SETJMP_H
 
+#include <compiler.h>
+
 #if defined(ARM32)
 /*
  * All callee preserved registers:
@@ -49,15 +52,23 @@
 #define _JBLEN 22
 #define _JBTYPE long long
 #endif
+/*
+ * Callee preserved registers:
+ * s0-s11, ra, sp
+ */
+#if defined(RV64) || defined(RV32)
+#define _JBLEN 14
+#define _JBTYPE unsigned long
+#endif
 
 #ifdef _JBLEN
 typedef	_JBTYPE jmp_buf[_JBLEN];
 #endif
 
-void longjmp(jmp_buf env, int val);
+void __noreturn longjmp(jmp_buf env, int val);
 int setjmp(jmp_buf env);
 
-#ifdef CFG_TA_FTRACE_SUPPORT
+#ifdef CFG_FTRACE_SUPPORT
 void ftrace_longjmp(unsigned int *ret_idx);
 void ftrace_setjmp(unsigned int *ret_idx);
 #endif
